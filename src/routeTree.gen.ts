@@ -30,6 +30,7 @@ import { Route as RpcCommandSplatRouteImport } from './routes/rpc.command.$'
 import { Route as AppSettingsRegisterMobileAppRouteImport } from './routes/app/settings.register-mobile-app'
 import { Route as AppSettingsConfigurationsRouteImport } from './routes/app/settings.configurations'
 import { Route as AppPatientsRegisterRouteImport } from './routes/app/patients.register'
+import { Route as AppPatientsImportRouteImport } from './routes/app/patients.import'
 import { Route as AppPatientsCustomizeRegistrationFormRouteImport } from './routes/app/patients.customize-registration-form'
 import { Route as AppPatientsIdRouteImport } from './routes/app/patients.$id'
 import { Route as AppDataEventsRouteImport } from './routes/app/data.events'
@@ -161,6 +162,11 @@ const AppSettingsConfigurationsRoute =
 const AppPatientsRegisterRoute = AppPatientsRegisterRouteImport.update({
   id: '/patients/register',
   path: '/patients/register',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPatientsImportRoute = AppPatientsImportRouteImport.update({
+  id: '/patients/import',
+  path: '/patients/import',
   getParentRoute: () => AppRoute,
 } as any)
 const AppPatientsCustomizeRegistrationFormRoute =
@@ -316,6 +322,7 @@ export interface FileRoutesByFullPath {
   '/app/data/events': typeof AppDataEventsRoute
   '/app/patients/$id': typeof AppPatientsIdRoute
   '/app/patients/customize-registration-form': typeof AppPatientsCustomizeRegistrationFormRoute
+  '/app/patients/import': typeof AppPatientsImportRoute
   '/app/patients/register': typeof AppPatientsRegisterRoute
   '/app/settings/configurations': typeof AppSettingsConfigurationsRoute
   '/app/settings/register-mobile-app': typeof AppSettingsRegisterMobileAppRoute
@@ -362,6 +369,7 @@ export interface FileRoutesByTo {
   '/app/data/events': typeof AppDataEventsRoute
   '/app/patients/$id': typeof AppPatientsIdRoute
   '/app/patients/customize-registration-form': typeof AppPatientsCustomizeRegistrationFormRoute
+  '/app/patients/import': typeof AppPatientsImportRoute
   '/app/patients/register': typeof AppPatientsRegisterRoute
   '/app/settings/configurations': typeof AppSettingsConfigurationsRoute
   '/app/settings/register-mobile-app': typeof AppSettingsRegisterMobileAppRoute
@@ -411,6 +419,7 @@ export interface FileRoutesById {
   '/app/data/events': typeof AppDataEventsRoute
   '/app/patients/$id': typeof AppPatientsIdRoute
   '/app/patients/customize-registration-form': typeof AppPatientsCustomizeRegistrationFormRoute
+  '/app/patients/import': typeof AppPatientsImportRoute
   '/app/patients/register': typeof AppPatientsRegisterRoute
   '/app/settings/configurations': typeof AppSettingsConfigurationsRoute
   '/app/settings/register-mobile-app': typeof AppSettingsRegisterMobileAppRoute
@@ -461,6 +470,7 @@ export interface FileRouteTypes {
     | '/app/data/events'
     | '/app/patients/$id'
     | '/app/patients/customize-registration-form'
+    | '/app/patients/import'
     | '/app/patients/register'
     | '/app/settings/configurations'
     | '/app/settings/register-mobile-app'
@@ -507,6 +517,7 @@ export interface FileRouteTypes {
     | '/app/data/events'
     | '/app/patients/$id'
     | '/app/patients/customize-registration-form'
+    | '/app/patients/import'
     | '/app/patients/register'
     | '/app/settings/configurations'
     | '/app/settings/register-mobile-app'
@@ -555,6 +566,7 @@ export interface FileRouteTypes {
     | '/app/data/events'
     | '/app/patients/$id'
     | '/app/patients/customize-registration-form'
+    | '/app/patients/import'
     | '/app/patients/register'
     | '/app/settings/configurations'
     | '/app/settings/register-mobile-app'
@@ -751,6 +763,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPatientsRegisterRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/patients/import': {
+      id: '/app/patients/import'
+      path: '/patients/import'
+      fullPath: '/app/patients/import'
+      preLoaderRoute: typeof AppPatientsImportRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/patients/customize-registration-form': {
       id: '/app/patients/customize-registration-form'
       path: '/patients/customize-registration-form'
@@ -934,6 +953,7 @@ interface AppRouteChildren {
   AppDataEventsRoute: typeof AppDataEventsRoute
   AppPatientsIdRoute: typeof AppPatientsIdRoute
   AppPatientsCustomizeRegistrationFormRoute: typeof AppPatientsCustomizeRegistrationFormRoute
+  AppPatientsImportRoute: typeof AppPatientsImportRoute
   AppPatientsRegisterRoute: typeof AppPatientsRegisterRoute
   AppSettingsConfigurationsRoute: typeof AppSettingsConfigurationsRoute
   AppSettingsRegisterMobileAppRoute: typeof AppSettingsRegisterMobileAppRoute
@@ -969,6 +989,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppPatientsIdRoute: AppPatientsIdRoute,
   AppPatientsCustomizeRegistrationFormRoute:
     AppPatientsCustomizeRegistrationFormRoute,
+  AppPatientsImportRoute: AppPatientsImportRoute,
   AppPatientsRegisterRoute: AppPatientsRegisterRoute,
   AppSettingsConfigurationsRoute: AppSettingsConfigurationsRoute,
   AppSettingsRegisterMobileAppRoute: AppSettingsRegisterMobileAppRoute,
