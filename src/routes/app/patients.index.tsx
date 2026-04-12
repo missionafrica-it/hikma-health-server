@@ -10,6 +10,7 @@ import {
   LucideDownload,
   LucideFilter,
   LucideTrash,
+  LucideUpload,
 } from "lucide-react";
 import { Option } from "effect";
 
@@ -865,6 +866,12 @@ function RouteComponent() {
       </div>
 
       <div className="pt-4 flex gap-3">
+        <Link to="/app/patients/import">
+          <Button type="button" variant="outline">
+            <LucideUpload className="mr-2 h-4 w-4" />
+            Bulk Import Patients
+          </Button>
+        </Link>
         <Button type="button" variant="outline" onClick={handleExport}>
           <LucideDownload className="mr-2 h-4 w-4" />
           Export All Patient Data

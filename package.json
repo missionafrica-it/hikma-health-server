@@ -24,7 +24,7 @@
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "migrate:latest": "pnpx tsx src/db/migrate-to-latest.ts",
+    "migrate:latest": "npx dotenv -e .env -- npx kysely migrate latest",
     "recovery:permissions": "pnpx tsx scripts/user_permissions_recovery.ts",
     "recovery:permissions:dry-run": "DRY_RUN=true pnpx tsx scripts/user_permissions_recovery.ts",
     "res:build": "rescript",

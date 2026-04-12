@@ -1,0 +1,6 @@
+allowBuilds:
+  '@biomejs/biome': true
+  '@sentry/cli': true
+  bcrypt: true
+  esbuild: true
+  lefthook: true

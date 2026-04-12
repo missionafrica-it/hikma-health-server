@@ -78,6 +78,10 @@ export const navData = {
           url: "/app/patients/register",
         },
         {
+          title: "Bulk Import Patients",
+          url: "/app/patients/import",
+        },
+        {
           title: "Registration Form",
           url: "/app/patients/customize-registration-form",
         },
