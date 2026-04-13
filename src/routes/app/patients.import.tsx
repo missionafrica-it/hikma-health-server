@@ -6,11 +6,37 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { uuidv7 } from "uuidv7";
 import db from "@/db";
 import { createServerCaller } from "@/integrations/trpc/router";
+import { getAllClinics } from "@/lib/server-functions/clinics";
+import PatientRegistrationForm from "@/models/patient-registration-form";
+import { Result } from "@/lib/result";
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type AdditionalAttribute = {
+  attribute_id: string;
+  attribute: string;
+  number_value?: number | null;
+  string_value?: string | null;
+  date_value?: string | null;
+  boolean_value?: boolean | null;
+};
+
+/** All CSV/XLSX columns as raw strings, keyed by lowercased header name. */
+type RawRow = Record<string, string> & { _source_row: number };
+
+/** Typed patient row ready to send to the server. */
 type CsvRow = {
   given_name?: string;
   surname?: string;
@@ -22,13 +48,13 @@ type CsvRow = {
   camp?: string;
   government_id?: string;
   external_patient_id?: string;
-  primary_clinic_id?: string;
-  primary_clinic_name?: string;
   _source_row?: number;
+  additional_attributes?: AdditionalAttribute[];
 };
 
 type ImportPayload = {
   rows: CsvRow[];
+  clinicId?: string | null;
   dryRun?: boolean;
 };
 
@@ -40,7 +66,14 @@ type ImportResult = {
   errors: Array<{ row: number; message: string }>;
 };
 
-const SUPPORTED_HEADERS = [
+type PreValidation = {
+  errors: Array<{ row: number; message: string }>;
+  warnings: string[];
+};
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const SUPPORTED_BASE_HEADERS = [
   "given_name",
   "surname",
   "date_of_birth",
@@ -51,44 +84,47 @@ const SUPPORTED_HEADERS = [
   "camp",
   "government_id",
   "external_patient_id",
-  "primary_clinic_id",
-  "primary_clinic_name",
 ] as const;
-const SUPPORTED_HEADER_SET = new Set<string>(SUPPORTED_HEADERS);
+
+const BASE_HEADER_SET = new Set<string>(SUPPORTED_BASE_HEADERS);
 const ALLOWED_SEX_VALUES = new Set(["male", "female", "other", "unknown"]);
 const STRICT_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
-type PreValidation = {
-  errors: Array<{ row: number; message: string }>;
-  warnings: string[];
-};
+// ─── Server functions ─────────────────────────────────────────────────────────
+
+const getAllRegistrationForms = createServerFn({ method: "GET" }).handler(
+  async () => PatientRegistrationForm.getAll(),
+);
 
 const importPatientsChunk = createServerFn({ method: "POST" })
   .inputValidator((data: ImportPayload) => data)
   .handler(async ({ data }): Promise<ImportResult> => {
     const token = getCookie("token");
-    if (!token) {
-      throw new Error("Unauthorized");
-    }
+    if (!token) throw new Error("Unauthorized");
 
     const rows = data.rows ?? [];
     if (rows.length === 0) {
-      return {
-        success: 0,
-        created: 0,
-        updated: 0,
-        failed: 0,
-        errors: [],
-      };
+      return { success: 0, created: 0, updated: 0, failed: 0, errors: [] };
     }
     if (rows.length > 1000) {
       throw new Error("Chunk too large. Max 1000 rows per request.");
     }
 
-    const caller = createServerCaller({
-      authHeader: `Bearer ${token}`,
-    });
+    // Validate the selected clinic once for the whole chunk.
+    const clinicId = (data.clinicId || "").trim() || null;
+    if (clinicId) {
+      const clinic = await db
+        .selectFrom("clinics")
+        .select("id")
+        .where("id", "=", clinicId)
+        .where("is_deleted", "=", false)
+        .executeTakeFirst();
+      if (!clinic) throw new Error(`Unknown clinic id: "${clinicId}".`);
+    }
 
+    const caller = createServerCaller({ authHeader: `Bearer ${token}` });
+
+    // Build dedup lookup maps for this chunk.
     const externalIds = Array.from(
       new Set(
         rows
@@ -126,21 +162,10 @@ const importPatientsChunk = createServerFn({ method: "POST" })
     const byExternal = new Map<string, string>();
     const byGovernment = new Map<string, string>();
     for (const p of existingPatients) {
-      if (p.external_patient_id) {
+      if (p.external_patient_id)
         byExternal.set(p.external_patient_id.trim(), p.id);
-      }
-      if (p.government_id) {
-        byGovernment.set(p.government_id.trim(), p.id);
-      }
+      if (p.government_id) byGovernment.set(p.government_id.trim(), p.id);
     }
-
-    const clinics = await db.selectFrom("clinics").select(["id", "name"]).execute();
-    const clinicIdSet = new Set(clinics.map((c) => c.id));
-    const clinicNameToId = new Map(
-      clinics
-        .filter((c) => (c.name || "").trim().length > 0)
-        .map((c) => [c.name!.trim().toLowerCase(), c.id]),
-    );
 
     let success = 0;
     let created = 0;
@@ -161,20 +186,6 @@ const importPatientsChunk = createServerFn({ method: "POST" })
         errors.push({
           row: rowNumber,
           message: "Either given_name or surname is required.",
-        });
-        continue;
-      }
-
-      let clinicId = (row.primary_clinic_id || "").trim();
-      if (!clinicId && row.primary_clinic_name) {
-        const byName = clinicNameToId.get(row.primary_clinic_name.trim().toLowerCase());
-        if (byName) clinicId = byName;
-      }
-      if (clinicId && !clinicIdSet.has(clinicId)) {
-        failed += 1;
-        errors.push({
-          row: rowNumber,
-          message: `Unknown clinic reference: "${clinicId || row.primary_clinic_name}".`,
         });
         continue;
       }
@@ -233,14 +244,14 @@ const importPatientsChunk = createServerFn({ method: "POST" })
             camp: (row.camp || "").trim() || null,
             government_id: governmentId || null,
             external_patient_id: externalId || null,
-            primary_clinic_id: clinicId || null,
+            primary_clinic_id: clinicId,
             additional_data: {},
             metadata: {},
             photo_url: null,
             updated_at: Date.now(),
             created_at: Date.now(),
           },
-          additional_attributes: [],
+          additional_attributes: row.additional_attributes ?? [],
         });
         success += 1;
         if (existingId) updated += 1;
@@ -250,24 +261,33 @@ const importPatientsChunk = createServerFn({ method: "POST" })
         errors.push({
           row: rowNumber,
           message:
-            error instanceof Error ? error.message : "Failed to import patient row.",
+            error instanceof Error
+              ? error.message
+              : "Failed to import patient row.",
         });
       }
     }
 
-    return {
-      success,
-      created,
-      updated,
-      failed,
-      errors,
-    };
+    return { success, created, updated, failed, errors };
   });
+
+// ─── Route ────────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/app/patients/import")({
   component: RouteComponent,
+  loader: async () => {
+    const [clinicsResult, forms] = await Promise.all([
+      getAllClinics(),
+      getAllRegistrationForms(),
+    ]);
+    const clinics = Result.getOrElse(clinicsResult, []);
+    return { clinics, forms };
+  },
 });
 
+// ─── Pure helpers ─────────────────────────────────────────────────────────────
+
+/** Hand-rolled CSV line parser that handles quoted fields and escaped quotes. */
 function parseCsvLine(line: string): string[] {
   const values: string[] = [];
   let current = "";
@@ -296,7 +316,8 @@ function parseCsvLine(line: string): string[] {
   return values;
 }
 
-function parseCsv(content: string): CsvRow[] {
+/** Parse a CSV file into raw rows (all columns preserved as strings). */
+function parseCsvToRaw(content: string): RawRow[] {
   const lines = content
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -304,50 +325,36 @@ function parseCsv(content: string): CsvRow[] {
 
   if (lines.length < 2) return [];
   const headers = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
-  const rows: CsvRow[] = [];
+  const rows: RawRow[] = [];
 
   for (let i = 1; i < lines.length; i += 1) {
     const cols = parseCsvLine(lines[i]);
-    const record: Record<string, string> = {};
+    const record: RawRow = { _source_row: i + 1 };
     headers.forEach((h, idx) => {
       record[h] = (cols[idx] || "").trim();
     });
-    rows.push({
-      given_name: record.given_name,
-      surname: record.surname,
-      date_of_birth: record.date_of_birth,
-      sex: record.sex,
-      citizenship: record.citizenship,
-      hometown: record.hometown,
-      phone: record.phone,
-      camp: record.camp,
-      government_id: record.government_id,
-      external_patient_id: record.external_patient_id,
-      primary_clinic_id: record.primary_clinic_id,
-      primary_clinic_name: record.primary_clinic_name,
-      _source_row: i + 1,
-    });
+    rows.push(record);
   }
-
   return rows;
 }
 
-async function parseXlsx(file: File): Promise<CsvRow[]> {
+/** Parse an XLSX/XLSM file into raw rows (all columns preserved as strings). */
+async function parseXlsxToRaw(file: File): Promise<{ rows: RawRow[]; headers: string[] }> {
   const ExcelJS = (await import("exceljs")).default;
   const buffer = await file.arrayBuffer();
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
   const sheet = workbook.worksheets[0];
-  if (!sheet) return [];
+  if (!sheet) return { rows: [], headers: [] };
 
   const headerCells = (sheet.getRow(1).values as Array<string | number | null>)
     .slice(1)
     .map((v) => String(v || "").trim().toLowerCase());
 
-  const rows: CsvRow[] = [];
+  const rows: RawRow[] = [];
   for (let r = 2; r <= sheet.rowCount; r += 1) {
     const row = sheet.getRow(r);
-    const record: Record<string, string> = {};
+    const record: RawRow = { _source_row: r };
     headerCells.forEach((h, idx) => {
       const cell = row.getCell(idx + 1).value;
       record[h] =
@@ -357,49 +364,134 @@ async function parseXlsx(file: File): Promise<CsvRow[]> {
             ? String(cell.text || "")
             : String(cell);
     });
-    const values = Object.values(record).map((v) => v.trim());
-    if (values.every((v) => v.length === 0)) {
-      continue;
-    }
-    rows.push({
-      given_name: record.given_name,
-      surname: record.surname,
-      date_of_birth: record.date_of_birth,
-      sex: record.sex,
-      citizenship: record.citizenship,
-      hometown: record.hometown,
-      phone: record.phone,
-      camp: record.camp,
-      government_id: record.government_id,
-      external_patient_id: record.external_patient_id,
-      primary_clinic_id: record.primary_clinic_id,
-      primary_clinic_name: record.primary_clinic_name,
-      _source_row: r,
-    });
+    const values = headerCells.map((h) => record[h] || "");
+    if (values.every((v) => v.trim().length === 0)) continue;
+    rows.push(record);
   }
-  return rows;
+  return { rows, headers: headerCells };
 }
 
-function validateHeaders(fileHeaders: string[]): string[] {
+/**
+ * Map a raw row's custom-field columns into typed AdditionalAttribute objects,
+ * using the field definitions from the active registration form.
+ */
+function mapRowToAdditionalAttributes(
+  raw: RawRow,
+  customFields: PatientRegistrationForm.Field[],
+): AdditionalAttribute[] {
+  const attrs: AdditionalAttribute[] = [];
+  for (const field of customFields) {
+    const rawValue = (raw[field.column.toLowerCase()] || "").trim();
+    if (!rawValue) continue;
+
+    const attr: AdditionalAttribute = {
+      attribute_id: field.id,
+      attribute: field.column,
+    };
+
+    switch (field.fieldType) {
+      case "number": {
+        const num = parseFloat(rawValue);
+        if (!isNaN(num)) attr.number_value = num;
+        break;
+      }
+      case "boolean":
+        attr.boolean_value =
+          rawValue.toLowerCase() === "true" ||
+          rawValue === "1" ||
+          rawValue.toLowerCase() === "yes";
+        break;
+      case "date":
+        attr.date_value = rawValue;
+        break;
+      default:
+        attr.string_value = rawValue;
+    }
+    attrs.push(attr);
+  }
+  return attrs;
+}
+
+/** Build a typed CsvRow from a raw row, mapping custom field columns as well. */
+function buildCsvRow(
+  raw: RawRow,
+  customFields: PatientRegistrationForm.Field[],
+): CsvRow {
+  return {
+    given_name: raw.given_name,
+    surname: raw.surname,
+    date_of_birth: raw.date_of_birth,
+    sex: raw.sex,
+    citizenship: raw.citizenship,
+    hometown: raw.hometown,
+    phone: raw.phone,
+    camp: raw.camp,
+    government_id: raw.government_id,
+    external_patient_id: raw.external_patient_id,
+    _source_row: raw._source_row,
+    additional_attributes: mapRowToAdditionalAttributes(raw, customFields),
+  };
+}
+
+/**
+ * Find the most relevant registration form for the selected clinic and return
+ * only the non-base, non-deleted custom fields.
+ */
+function getCustomFieldsForClinic(
+  clinicId: string | null,
+  forms: PatientRegistrationForm.EncodedT[],
+): PatientRegistrationForm.Field[] {
+  const activeForms = forms.filter((f) => !f.is_deleted);
+  // Prefer a clinic-specific form, fall back to the most recently updated global form.
+  let form =
+    clinicId
+      ? (activeForms.find((f) => f.clinic_id === clinicId) ?? undefined)
+      : undefined;
+  if (!form) {
+    form = [...activeForms].sort(
+      (a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    )[0];
+  }
+  if (!form) return [];
+  return form.fields.filter((f) => !f.baseField && !f.deleted);
+}
+
+/**
+ * Validate file headers against the known base columns plus any custom field
+ * columns for the selected clinic.
+ */
+function validateHeaders(
+  fileHeaders: string[],
+  customFieldColumns: string[],
+): string[] {
   const errors: string[] = [];
-  const unknown = fileHeaders.filter((h) => h && !SUPPORTED_HEADER_SET.has(h));
+  const allKnown = new Set([
+    ...BASE_HEADER_SET,
+    ...customFieldColumns.map((c) => c.toLowerCase()),
+  ]);
+  const unknown = fileHeaders.filter((h) => h && !allKnown.has(h));
   if (unknown.length > 0) {
     errors.push(`Unsupported headers: ${unknown.join(", ")}`);
   }
-  const hasGiven = fileHeaders.includes("given_name");
-  const hasSurname = fileHeaders.includes("surname");
-  if (!hasGiven || !hasSurname) {
+  if (
+    !fileHeaders.includes("given_name") ||
+    !fileHeaders.includes("surname")
+  ) {
     errors.push("Headers must include both given_name and surname columns.");
   }
   return errors;
 }
 
 function parseHeaderListFromCsv(content: string): string[] {
-  const firstLine = content.split(/\r?\n/).find((l) => l.trim().length > 0) || "";
+  const firstLine =
+    content.split(/\r?\n/).find((l) => l.trim().length > 0) || "";
   return parseCsvLine(firstLine).map((h) => h.trim().toLowerCase());
 }
 
-function createErrorCsv(errors: Array<{ row: number; message: string }>): string {
+function createErrorCsv(
+  errors: Array<{ row: number; message: string }>,
+): string {
   const header = "row,error\n";
   const body = errors
     .map((e) => `${e.row},"${String(e.message).replaceAll('"', '""')}"`)
@@ -407,18 +499,37 @@ function createErrorCsv(errors: Array<{ row: number; message: string }>): string
   return header + body;
 }
 
-function createTemplateCsv(): string {
-  const header = SUPPORTED_HEADERS.join(",");
-  const sample =
-    "Amina,Khan,2012-09-15,female,Syria,Azraq,0790000000,School Camp 2026,GOV-1001,EXT-1001,,";
-  return `${header}\n${sample}\n`;
+function createTemplateCsv(
+  customFields: PatientRegistrationForm.Field[],
+): string {
+  const customColumns = customFields.map((f) => f.column);
+  const allHeaders = [...SUPPORTED_BASE_HEADERS, ...customColumns];
+  const sampleCustomValues = customFields.map(() => "");
+  const sample = [
+    "Amina",
+    "Khan",
+    "2012-09-15",
+    "female",
+    "Syria",
+    "Azraq",
+    "0790000000",
+    "School Camp 2026",
+    "GOV-1001",
+    "EXT-1001",
+    ...sampleCustomValues,
+  ].join(",");
+  return `${allHeaders.join(",")}\n${sample}\n`;
 }
 
-async function createTemplateXlsxBlob(): Promise<Blob> {
+async function createTemplateXlsxBlob(
+  customFields: PatientRegistrationForm.Field[],
+): Promise<Blob> {
   const ExcelJS = (await import("exceljs")).default;
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("patients_import_template");
-  sheet.addRow([...SUPPORTED_HEADERS]);
+  const customColumns = customFields.map((f) => f.column);
+  const allHeaders = [...SUPPORTED_BASE_HEADERS, ...customColumns];
+  sheet.addRow(allHeaders);
   sheet.addRow([
     "Amina",
     "Khan",
@@ -430,8 +541,7 @@ async function createTemplateXlsxBlob(): Promise<Blob> {
     "School Camp 2026",
     "GOV-1001",
     "EXT-1001",
-    "",
-    "",
+    ...customFields.map(() => ""),
   ]);
   sheet.getRow(1).font = { bold: true };
   const buffer = await workbook.xlsx.writeBuffer();
@@ -493,9 +603,25 @@ function preValidateRows(rows: CsvRow[]): PreValidation {
   return { errors, warnings };
 }
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
 function RouteComponent() {
+  const { clinics, forms } = Route.useLoaderData();
+
+  const [selectedClinicId, setSelectedClinicId] = useState<string>("");
   const [fileName, setFileName] = useState<string>("");
-  const [rows, setRows] = useState<CsvRow[]>([]);
+  const [rawRows, setRawRows] = useState<RawRow[]>([]);
   const [isImporting, setIsImporting] = useState(false);
   const [lastResult, setLastResult] = useState<ImportResult | null>(null);
   const [dryRun, setDryRun] = useState(true);
@@ -505,36 +631,64 @@ function RouteComponent() {
     warnings: [],
   });
 
+  // Derive the active custom fields for the selected clinic.
+  const customFields = useMemo(
+    () => getCustomFieldsForClinic(selectedClinicId || null, forms),
+    [selectedClinicId, forms],
+  );
+
+  // Re-map raw rows → typed CsvRows whenever the clinic (and thus custom fields) changes.
+  const rows = useMemo(
+    () => rawRows.map((r) => buildCsvRow(r, customFields)),
+    [rawRows, customFields],
+  );
+
   const preview = useMemo(() => rows.slice(0, 8), [rows]);
   const hasRows = rows.length > 0;
+  const hasClinic = selectedClinicId.length > 0;
+
+  const onClinicChange = (clinicId: string) => {
+    setSelectedClinicId(clinicId);
+    // Clear any loaded file when the clinic changes so mappings stay consistent.
+    setFileName("");
+    setRawRows([]);
+    setLastResult(null);
+    setFileHeaderErrors([]);
+    setPreValidation({ errors: [], warnings: [] });
+  };
 
   const onFileChange = async (file?: File | null) => {
     if (!file) return;
     setFileName(file.name);
-    let parsed: CsvRow[] = [];
+    let raw: RawRow[] = [];
     let headers: string[] = [];
+
     if (file.name.toLowerCase().endsWith(".csv")) {
       const content = await file.text();
       headers = parseHeaderListFromCsv(content);
-      parsed = parseCsv(content);
+      raw = parseCsvToRaw(content);
     } else if (
       file.name.toLowerCase().endsWith(".xlsx") ||
       file.name.toLowerCase().endsWith(".xlsm")
     ) {
-      parsed = await parseXlsx(file);
-      headers = Object.keys(parsed[0] || {})
-        .filter((k) => !k.startsWith("_"))
-        .map((k) => k.toLowerCase());
+      const result = await parseXlsxToRaw(file);
+      raw = result.rows;
+      headers = result.headers;
     } else {
       toast.error("Unsupported file type. Please upload CSV or XLSX.");
       return;
     }
-    const headerErrors = validateHeaders(headers);
+
+    const customFieldColumns = customFields.map((f) => f.column);
+    const headerErrors = validateHeaders(headers, customFieldColumns);
     setFileHeaderErrors(headerErrors);
-    const pre = preValidateRows(parsed);
+
+    const mapped = raw.map((r) => buildCsvRow(r, customFields));
+    const pre = preValidateRows(mapped);
     setPreValidation(pre);
-    setRows(parsed);
+    setRawRows(raw);
     setLastResult(null);
+
     if (headerErrors.length > 0) {
       toast.error("File header validation failed.");
       return;
@@ -545,40 +699,28 @@ function RouteComponent() {
       );
       return;
     }
-    if (parsed.length === 0) {
+    if (raw.length === 0) {
       toast.error("No data rows found.");
       return;
     }
-    toast.success(`Loaded ${parsed.length} rows from ${file.name}`);
+    toast.success(`Loaded ${raw.length} rows from ${file.name}`);
   };
 
   const downloadTemplateCsv = () => {
-    const content = createTemplateCsv();
-    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "patient-import-template.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const content = createTemplateCsv(customFields);
+    downloadBlob(
+      new Blob([content], { type: "text/csv;charset=utf-8;" }),
+      "patient-import-template.csv",
+    );
   };
 
   const downloadTemplateXlsx = async () => {
-    const blob = await createTemplateXlsxBlob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "patient-import-template.xlsx";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const blob = await createTemplateXlsxBlob(customFields);
+    downloadBlob(blob, "patient-import-template.xlsx");
   };
 
   const runImport = async () => {
-    if (!hasRows || isImporting) return;
+    if (!hasRows || !hasClinic || isImporting) return;
     setIsImporting(true);
     setLastResult(null);
 
@@ -595,10 +737,7 @@ function RouteComponent() {
       for (let i = 0; i < rows.length; i += chunkSize) {
         const chunk = rows.slice(i, i + chunkSize);
         const res = await importPatientsChunk({
-          data: {
-            rows: chunk,
-            dryRun,
-          },
+          data: { rows: chunk, clinicId: selectedClinicId, dryRun },
         });
         aggregate = {
           success: aggregate.success + res.success,
@@ -630,17 +769,16 @@ function RouteComponent() {
 
   const downloadErrorCsv = () => {
     if (!lastResult || lastResult.errors.length === 0) return;
-    const content = createErrorCsv(lastResult.errors);
-    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "patient-import-errors.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadBlob(
+      new Blob([createErrorCsv(lastResult.errors)], {
+        type: "text/csv;charset=utf-8;",
+      }),
+      "patient-import-errors.csv",
+    );
   };
+
+  const selectedClinicName =
+    clinics.find((c) => c.id === selectedClinicId)?.name ?? "";
 
   return (
     <div className="space-y-6 py-4">
@@ -651,36 +789,106 @@ function RouteComponent() {
         </p>
       </div>
 
+      {/* ── Step 1: Clinic selector ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Step 1 — Select Clinic</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Label htmlFor="clinic-select">Clinic</Label>
+          <Select value={selectedClinicId} onValueChange={onClinicChange}>
+            <SelectTrigger id="clinic-select" className="w-72">
+              <SelectValue placeholder="Choose a clinic…" />
+            </SelectTrigger>
+            <SelectContent>
+              {clinics.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {hasClinic && customFields.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              {customFields.length} custom field
+              {customFields.length !== 1 ? "s" : ""} detected for{" "}
+              <strong>{selectedClinicName}</strong>:{" "}
+              {customFields.map((f) => f.column).join(", ")}
+            </p>
+          )}
+          {hasClinic && customFields.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No custom fields found for <strong>{selectedClinicName}</strong>.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Required headers info ── */}
       <Alert>
         <AlertTitle>Required file headers</AlertTitle>
         <AlertDescription>
-          Use: <code>given_name,surname,date_of_birth,sex,citizenship,hometown,phone,camp,government_id,external_patient_id,primary_clinic_id,primary_clinic_name</code>.
-          {" "}At least one of <code>given_name</code> or <code>surname</code> is required.
+          <span>
+            Base columns:{" "}
+            <code>{SUPPORTED_BASE_HEADERS.join(", ")}</code>.
+          </span>
+          {customFields.length > 0 && (
+            <span>
+              {" "}
+              Custom columns for {selectedClinicName}:{" "}
+              <code>{customFields.map((f) => f.column).join(", ")}</code>.
+            </span>
+          )}
+          {" "}At least one of <code>given_name</code> or{" "}
+          <code>surname</code> is required per row.
         </AlertDescription>
       </Alert>
 
+      {/* ── Templates ── */}
       <Card>
         <CardHeader>
-          <CardTitle>Templates</CardTitle>
+          <CardTitle>
+            Templates
+            {hasClinic && customFields.length > 0 && (
+              <span className="ml-2 text-sm font-normal text-muted-foreground">
+                — includes custom fields for {selectedClinicName}
+              </span>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent className="flex gap-3">
-          <Button type="button" variant="outline" onClick={downloadTemplateCsv}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={downloadTemplateCsv}
+          >
             Download CSV Template
           </Button>
-          <Button type="button" variant="outline" onClick={downloadTemplateXlsx}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={downloadTemplateXlsx}
+          >
             Download XLSX Template
           </Button>
         </CardContent>
       </Card>
 
+      {/* ── Step 2: Upload file ── */}
       <Card>
         <CardHeader>
-          <CardTitle>Upload CSV</CardTitle>
+          <CardTitle>Step 2 — Upload File</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!hasClinic && (
+            <p className="text-sm text-amber-700">
+              Please select a clinic above before uploading a file.
+            </p>
+          )}
           <Input
             type="file"
             accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            disabled={!hasClinic}
             onChange={(e) => onFileChange(e.target.files?.[0] || null)}
           />
           {fileHeaderErrors.length > 0 && (
@@ -705,6 +913,7 @@ function RouteComponent() {
             onClick={runImport}
             disabled={
               !hasRows ||
+              !hasClinic ||
               isImporting ||
               fileHeaderErrors.length > 0 ||
               preValidation.errors.length > 0
@@ -735,6 +944,7 @@ function RouteComponent() {
         </CardContent>
       </Card>
 
+      {/* ── Preview table ── */}
       {hasRows && (
         <Card>
           <CardHeader>
@@ -750,20 +960,44 @@ function RouteComponent() {
                     <th className="text-left py-2 pr-4">DOB</th>
                     <th className="text-left py-2 pr-4">External ID</th>
                     <th className="text-left py-2 pr-4">Gov ID</th>
-                    <th className="text-left py-2 pr-4">Clinic Ref</th>
+                    {customFields.map((f) => (
+                      <th key={f.id} className="text-left py-2 pr-4">
+                        {f.column}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {preview.map((r, i) => (
-                    <tr key={`${r.external_patient_id || ""}-${i}`} className="border-b">
+                    <tr
+                      key={`${r.external_patient_id || ""}-${i}`}
+                      className="border-b"
+                    >
                       <td className="py-2 pr-4">{r.given_name || "-"}</td>
                       <td className="py-2 pr-4">{r.surname || "-"}</td>
                       <td className="py-2 pr-4">{r.date_of_birth || "-"}</td>
-                      <td className="py-2 pr-4">{r.external_patient_id || "-"}</td>
-                      <td className="py-2 pr-4">{r.government_id || "-"}</td>
                       <td className="py-2 pr-4">
-                        {r.primary_clinic_id || r.primary_clinic_name || "-"}
+                        {r.external_patient_id || "-"}
                       </td>
+                      <td className="py-2 pr-4">{r.government_id || "-"}</td>
+                      {customFields.map((f) => {
+                        const attr = r.additional_attributes?.find(
+                          (a) => a.attribute_id === f.id,
+                        );
+                        const val =
+                          attr?.string_value ??
+                          attr?.number_value?.toString() ??
+                          (attr?.boolean_value !== undefined
+                            ? String(attr.boolean_value)
+                            : undefined) ??
+                          attr?.date_value ??
+                          "-";
+                        return (
+                          <td key={f.id} className="py-2 pr-4">
+                            {val}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -773,10 +1007,13 @@ function RouteComponent() {
         </Card>
       )}
 
+      {/* ── Results ── */}
       {lastResult && (
         <Card>
           <CardHeader>
-            <CardTitle>{dryRun ? "Validation Result" : "Import Result"}</CardTitle>
+            <CardTitle>
+              {dryRun ? "Validation Result" : "Import Result"}
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
@@ -787,7 +1024,11 @@ function RouteComponent() {
             </div>
             {lastResult.errors.length > 0 && (
               <div className="space-y-3">
-                <Button type="button" variant="outline" onClick={downloadErrorCsv}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={downloadErrorCsv}
+                >
                   Download Error CSV
                 </Button>
                 <div className="max-h-64 overflow-auto rounded border p-3 text-sm">

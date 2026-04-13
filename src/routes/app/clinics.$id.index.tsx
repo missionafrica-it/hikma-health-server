@@ -582,7 +582,17 @@ function RouteComponent() {
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline">View Patients</Button>
+            <Button
+              variant="outline"
+              onClick={() =>
+                navigate({
+                  to: "/app/patients/",
+                  search: { clinicId: clinic.id },
+                })
+              }
+            >
+              View Patients
+            </Button>
             <Button variant="outline">View Staff</Button>
             {!clinic.is_archived && (
               <Button
