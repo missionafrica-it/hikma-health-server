@@ -17,6 +17,7 @@ import {
 import { toast } from "sonner";
 import { uuidv7 } from "uuidv7";
 import db from "@/db";
+import { sql } from "kysely";
 import { createServerCaller } from "@/integrations/trpc/router";
 import { getAllClinics } from "@/lib/server-functions/clinics";
 import PatientRegistrationForm from "@/models/patient-registration-form";
@@ -154,10 +155,10 @@ const importPatientsChunk = createServerFn({ method: "POST" })
               eb.or([
                 externalIds.length > 0
                   ? eb("external_patient_id", "in", externalIds)
-                  : eb("id", "=", "__none__"),
+                  : sql<boolean>`false`,
                 governmentIds.length > 0
                   ? eb("government_id", "in", governmentIds)
-                  : eb("id", "=", "__none__"),
+                  : sql<boolean>`false`,
               ]),
             )
             .where("is_deleted", "=", false)
