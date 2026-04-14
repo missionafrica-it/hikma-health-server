@@ -543,7 +543,10 @@ namespace Sync {
               return false;
             })
             .map(([key, value]) => {
-              if (isEpochTimestamp(value)) {
+              // Only reformat epoch numbers in actual date/timestamp columns.
+              // Numeric fields like number_value can legitimately hold large numbers
+              // that would otherwise match the epoch heuristic.
+              if (isDateColumn(key) && isEpochTimestamp(value)) {
                 console.warn(
                   `[sync] Converting epoch timestamp in "${tableName}.${key}": ${value}`,
                 );

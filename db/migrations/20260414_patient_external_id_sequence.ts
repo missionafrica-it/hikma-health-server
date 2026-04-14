@@ -39,12 +39,20 @@ export async function up(db: Kysely<any>): Promise<void> {
       EXECUTE FUNCTION set_patient_external_id();
   `.execute(db);
 
-  // 4. Backfill existing patients that have no external_patient_id, oldest first
+  // 4. Backfill existing patients that have no external_patient_id, oldest first.
+  //    PostgreSQL does not support ORDER BY in UPDATE directly, so use a CTE to
+  //    drive the update in created_at order.
   await sql`
+    WITH ordered AS (
+      SELECT id
+      FROM patients
+      WHERE external_patient_id IS NULL OR TRIM(COALESCE(external_patient_id, '')) = ''
+      ORDER BY created_at ASC NULLS LAST
+    )
     UPDATE patients
     SET external_patient_id = 'P' || LPAD(nextval('patient_external_id_seq')::text, 5, '0')
-    WHERE external_patient_id IS NULL OR TRIM(external_patient_id) = ''
-    ORDER BY created_at ASC NULLS LAST;
+    FROM ordered
+    WHERE patients.id = ordered.id;
   `.execute(db);
 }
 
