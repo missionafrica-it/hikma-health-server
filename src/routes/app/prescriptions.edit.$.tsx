@@ -54,12 +54,14 @@ const savePrescription = createServerFn({ method: "POST" })
       currentClinicId: string;
     }) => data,
   )
-  .handler(async ({ data }) => {
+  .handler(async ({ data }): Promise<void> => {
     const { prescription, items, id, currentUserName, currentClinicId } = data;
 
     const prescriptionId = isValidUUID(id || "") ? id : null;
 
-    return Prescription.API.save(
+    // Await without returning — Kysely InsertResult contains bigint which
+    // cannot be serialized across the server/client boundary.
+    await Prescription.API.save(
       prescriptionId,
       prescription,
       items,

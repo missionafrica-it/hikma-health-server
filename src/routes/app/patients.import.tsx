@@ -73,9 +73,9 @@ type PreValidation = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SUPPORTED_BASE_HEADERS = [
-  "given_name",
-  "surname",
+const REQUIRED_BASE_HEADERS = ["given_name", "surname"] as const;
+
+const OPTIONAL_BASE_HEADERS = [
   "date_of_birth",
   "sex",
   "citizenship",
@@ -84,6 +84,11 @@ const SUPPORTED_BASE_HEADERS = [
   "camp",
   "government_id",
   "external_patient_id",
+] as const;
+
+const SUPPORTED_BASE_HEADERS = [
+  ...REQUIRED_BASE_HEADERS,
+  ...OPTIONAL_BASE_HEADERS,
 ] as const;
 
 const BASE_HEADER_SET = new Set<string>(SUPPORTED_BASE_HEADERS);
@@ -454,7 +459,9 @@ function getCustomFieldsForClinic(
     )[0];
   }
   if (!form) return [];
-  return form.fields.filter((f) => !f.baseField && !f.deleted);
+  return form.fields
+    .filter((f) => !f.baseField && !f.deleted)
+    .map((f) => ({ ...f, column: decodeURIComponent(f.column) }));
 }
 
 /**
@@ -515,7 +522,7 @@ function createTemplateCsv(
     "0790000000",
     "School Camp 2026",
     "GOV-1001",
-    "EXT-1001",
+    "", // external_patient_id — leave blank to auto-generate (e.g. P00001)
     ...sampleCustomValues,
   ].join(",");
   return `${allHeaders.join(",")}\n${sample}\n`;
@@ -540,7 +547,7 @@ async function createTemplateXlsxBlob(
     "0790000000",
     "School Camp 2026",
     "GOV-1001",
-    "EXT-1001",
+    "", // external_patient_id — leave blank to auto-generate (e.g. P00001)
     ...customFields.map(() => ""),
   ]);
   sheet.getRow(1).font = { bold: true };
@@ -826,21 +833,29 @@ function RouteComponent() {
 
       {/* ── Required headers info ── */}
       <Alert>
-        <AlertTitle>Required file headers</AlertTitle>
-        <AlertDescription>
-          <span>
-            Base columns:{" "}
-            <code>{SUPPORTED_BASE_HEADERS.join(", ")}</code>.
-          </span>
-          {customFields.length > 0 && (
-            <span>
-              {" "}
-              Custom columns for {selectedClinicName}:{" "}
-              <code>{customFields.map((f) => f.column).join(", ")}</code>.
-            </span>
-          )}
-          {" "}At least one of <code>given_name</code> or{" "}
-          <code>surname</code> is required per row.
+        <AlertTitle>File columns</AlertTitle>
+        <AlertDescription className="space-y-1">
+          <p>
+            <span className="font-medium">Required columns: </span>
+            <code>{REQUIRED_BASE_HEADERS.join(", ")}</code>
+          </p>
+          <p>
+            <span className="font-medium">Optional columns: </span>
+            <code>{OPTIONAL_BASE_HEADERS.join(", ")}</code>
+            {customFields.length > 0 && (
+              <span>
+                ,{" "}
+                <code>{customFields.map((f) => f.column).join(", ")}</code>{" "}
+                <span className="text-muted-foreground">
+                  (custom fields for {selectedClinicName})
+                </span>
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            If <code>external_patient_id</code> is blank or omitted, a unique ID
+            (e.g. <code>P00001</code>) is assigned automatically.
+          </p>
         </AlertDescription>
       </Alert>
 

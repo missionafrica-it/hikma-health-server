@@ -319,10 +319,17 @@ export function PrescriptionForm({
                     <FormLabel>Patient</FormLabel>
                     <div className="flex items-center h-10 px-3 border rounded-md bg-muted">
                       <span>
-                        {patientName ||
-                          (patient &&
-                            `${patient.given_name} ${patient.surname}`) ||
-                          form.getValues("patient_id")}
+                        {(() => {
+                          const name =
+                            patientName ||
+                            (patient &&
+                              [patient.given_name, patient.surname]
+                                .filter(Boolean)
+                                .join(" ")) ||
+                            form.getValues("patient_id");
+                          const extId = patient?.external_patient_id;
+                          return extId ? `${name} (${extId})` : name;
+                        })()}
                       </span>
                     </div>
                   </FormItem>

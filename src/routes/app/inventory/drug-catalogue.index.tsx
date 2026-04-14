@@ -167,14 +167,19 @@ function RouteComponent() {
             Total: {stats?.totalDrugs ?? 0} drugs
           </div>
         </div>
-        <Link
-          to="/app/inventory/drug-catalogue/edit/$"
-          params={{
-            _splat: "new",
-          }}
-        >
-          <Button>Add Drug</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to="/app/inventory/drug-catalogue/import">
+            <Button variant="outline">Import Drugs</Button>
+          </Link>
+          <Link
+            to="/app/inventory/drug-catalogue/edit/$"
+            params={{
+              _splat: "new",
+            }}
+          >
+            <Button>Add Drug</Button>
+          </Link>
+        </div>
       </div>
 
       {/* Search Section */}

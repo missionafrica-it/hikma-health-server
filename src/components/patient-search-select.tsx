@@ -37,11 +37,15 @@ export function PatientSearchSelect({
   defaultValue,
   defaultPatients,
 }: Props) {
-  const formatPatientOption = (patient: Patient.EncodedT) => ({
-    value: patient.id,
-    label: `${patient.given_name} ${patient.surname}`,
-    patient,
-  });
+  const formatPatientOption = (patient: Patient.EncodedT) => {
+    const name = `${patient.given_name ?? ""} ${patient.surname ?? ""}`.trim();
+    const extId = patient.external_patient_id;
+    return {
+      value: patient.id,
+      label: extId ? `${name} (${extId})` : name,
+      patient,
+    };
+  };
 
   const loadOptions = async (
     inputValue: string,

@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import * as React from "react";
 import { useState, useEffect } from "react";
@@ -195,10 +195,15 @@ function RouteComponent() {
           )}
         </div>
         {selectedClinicId && (
-          <Button onClick={handleAddNewItem}>
-            <LucidePlus />
-            Add New Item
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link to="/app/inventory/clinic-inventory/import">
+              <Button variant="outline">Import Stock</Button>
+            </Link>
+            <Button onClick={handleAddNewItem}>
+              <LucidePlus />
+              Add New Item
+            </Button>
+          </div>
         )}
       </div>
 

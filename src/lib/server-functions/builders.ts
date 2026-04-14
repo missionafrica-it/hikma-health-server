@@ -72,6 +72,9 @@ export type UpdatePatientInput = {
  * Build the plain values object for inserting a new patient.
  * Returns a flat object with all fields populated (nulls for missing optional fields).
  * The caller is responsible for wrapping date/json fields with sql`` tagged templates.
+ *
+ * Note: external_patient_id is left null when not supplied — a DB trigger
+ * (trg_set_patient_external_id) will auto-assign a sequential "P00001" style ID.
  */
 export function buildPatientInsertValues(
   input: CreatePatientInput["patient"],
@@ -89,7 +92,7 @@ export function buildPatientInsertValues(
     phone: input.phone ?? null,
     camp: input.camp ?? null,
     government_id: input.government_id ?? null,
-    external_patient_id: input.external_patient_id ?? null,
+    external_patient_id: input.external_patient_id?.trim() || null,
     additional_data: input.additional_data ?? {},
     metadata: input.metadata ?? {},
     photo_url: input.photo_url ?? null,

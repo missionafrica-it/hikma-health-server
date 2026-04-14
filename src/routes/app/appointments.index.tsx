@@ -107,11 +107,9 @@ function RouteComponent() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Patient ID</TableHead>
+                  <TableHead>Patient</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Appointment Time</TableHead>
-                  <TableHead>Given Name</TableHead>
-                  <TableHead>Last Name</TableHead>
                   <TableHead>Age</TableHead>
                   <TableHead>Clinic</TableHead>
                   <TableHead>Provider</TableHead>
@@ -124,8 +122,17 @@ function RouteComponent() {
               <TableBody>
                 {appointments.map((appt) => (
                   <TableRow key={appt?.appointment?.id}>
-                    <TableCell title={appt?.patient?.id}>
-                      {truncate(appt?.patient?.id, { length: 12 })}
+                    <TableCell>
+                      <div className="font-medium">
+                        {[appt?.patient?.given_name, appt?.patient?.surname]
+                          .filter(Boolean)
+                          .join(" ") || "—"}
+                      </div>
+                      {appt?.patient?.external_patient_id && (
+                        <div className="text-xs text-muted-foreground">
+                          {appt.patient.external_patient_id}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>
                       {appt?.appointment?.is_walk_in ? (
@@ -155,8 +162,6 @@ function RouteComponent() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell>{appt?.patient?.given_name}</TableCell>
-                    <TableCell>{appt?.patient?.surname}</TableCell>
                     <TableCell>
                       {calculateAge(appt?.patient?.date_of_birth)}
                     </TableCell>

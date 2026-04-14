@@ -677,6 +677,7 @@ namespace Patient {
           ? sql`AND (
               LOWER(p.given_name) LIKE LOWER(${searchPattern})
               OR LOWER(p.surname) LIKE LOWER(${searchPattern})
+              OR LOWER(COALESCE(p.external_patient_id, '')) LIKE LOWER(${searchPattern})
               OR LOWER(COALESCE(p.phone, '')) LIKE LOWER(${searchPattern})
               OR LOWER(COALESCE(p.camp, '')) LIKE LOWER(${searchPattern})
               OR LOWER(COALESCE(p.citizenship, '')) LIKE LOWER(${searchPattern})

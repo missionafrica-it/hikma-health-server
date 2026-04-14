@@ -49,6 +49,8 @@ import { Route as AppUsersManagePermissionsSplatRouteImport } from './routes/app
 import { Route as AppUsersEditSplatRouteImport } from './routes/app/users.edit.$'
 import { Route as AppReportsIdEditRouteImport } from './routes/app/reports/$id.edit'
 import { Route as AppPrescriptionsEditSplatRouteImport } from './routes/app/prescriptions.edit.$'
+import { Route as AppInventoryDrugCatalogueImportRouteImport } from './routes/app/inventory/drug-catalogue.import'
+import { Route as AppInventoryClinicInventoryImportRouteImport } from './routes/app/inventory/clinic-inventory.import'
 import { Route as AppEventFormsEditSplatRouteImport } from './routes/app/event-forms.edit.$'
 import { Route as AppEducationIdEditorRouteImport } from './routes/app/education/$id.editor'
 import { Route as AppClinicsEditSplatRouteImport } from './routes/app/clinics.edit.$'
@@ -264,6 +266,18 @@ const AppPrescriptionsEditSplatRoute =
     path: '/prescriptions/edit/$',
     getParentRoute: () => AppRoute,
   } as any)
+const AppInventoryDrugCatalogueImportRoute =
+  AppInventoryDrugCatalogueImportRouteImport.update({
+    id: '/inventory/drug-catalogue/import',
+    path: '/inventory/drug-catalogue/import',
+    getParentRoute: () => AppRoute,
+  } as any)
+const AppInventoryClinicInventoryImportRoute =
+  AppInventoryClinicInventoryImportRouteImport.update({
+    id: '/inventory/clinic-inventory/import',
+    path: '/inventory/clinic-inventory/import',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppEventFormsEditSplatRoute = AppEventFormsEditSplatRouteImport.update({
   id: '/event-forms/edit/$',
   path: '/event-forms/edit/$',
@@ -340,6 +354,8 @@ export interface FileRoutesByFullPath {
   '/app/clinics/edit/$': typeof AppClinicsEditSplatRoute
   '/app/education/$id/editor': typeof AppEducationIdEditorRoute
   '/app/event-forms/edit/$': typeof AppEventFormsEditSplatRoute
+  '/app/inventory/clinic-inventory/import': typeof AppInventoryClinicInventoryImportRoute
+  '/app/inventory/drug-catalogue/import': typeof AppInventoryDrugCatalogueImportRoute
   '/app/prescriptions/edit/$': typeof AppPrescriptionsEditSplatRoute
   '/app/reports/$id/edit': typeof AppReportsIdEditRoute
   '/app/users/edit/$': typeof AppUsersEditSplatRoute
@@ -387,6 +403,8 @@ export interface FileRoutesByTo {
   '/app/clinics/edit/$': typeof AppClinicsEditSplatRoute
   '/app/education/$id/editor': typeof AppEducationIdEditorRoute
   '/app/event-forms/edit/$': typeof AppEventFormsEditSplatRoute
+  '/app/inventory/clinic-inventory/import': typeof AppInventoryClinicInventoryImportRoute
+  '/app/inventory/drug-catalogue/import': typeof AppInventoryDrugCatalogueImportRoute
   '/app/prescriptions/edit/$': typeof AppPrescriptionsEditSplatRoute
   '/app/reports/$id/edit': typeof AppReportsIdEditRoute
   '/app/users/edit/$': typeof AppUsersEditSplatRoute
@@ -437,6 +455,8 @@ export interface FileRoutesById {
   '/app/clinics/edit/$': typeof AppClinicsEditSplatRoute
   '/app/education/$id/editor': typeof AppEducationIdEditorRoute
   '/app/event-forms/edit/$': typeof AppEventFormsEditSplatRoute
+  '/app/inventory/clinic-inventory/import': typeof AppInventoryClinicInventoryImportRoute
+  '/app/inventory/drug-catalogue/import': typeof AppInventoryDrugCatalogueImportRoute
   '/app/prescriptions/edit/$': typeof AppPrescriptionsEditSplatRoute
   '/app/reports/$id/edit': typeof AppReportsIdEditRoute
   '/app/users/edit/$': typeof AppUsersEditSplatRoute
@@ -488,6 +508,8 @@ export interface FileRouteTypes {
     | '/app/clinics/edit/$'
     | '/app/education/$id/editor'
     | '/app/event-forms/edit/$'
+    | '/app/inventory/clinic-inventory/import'
+    | '/app/inventory/drug-catalogue/import'
     | '/app/prescriptions/edit/$'
     | '/app/reports/$id/edit'
     | '/app/users/edit/$'
@@ -535,6 +557,8 @@ export interface FileRouteTypes {
     | '/app/clinics/edit/$'
     | '/app/education/$id/editor'
     | '/app/event-forms/edit/$'
+    | '/app/inventory/clinic-inventory/import'
+    | '/app/inventory/drug-catalogue/import'
     | '/app/prescriptions/edit/$'
     | '/app/reports/$id/edit'
     | '/app/users/edit/$'
@@ -584,6 +608,8 @@ export interface FileRouteTypes {
     | '/app/clinics/edit/$'
     | '/app/education/$id/editor'
     | '/app/event-forms/edit/$'
+    | '/app/inventory/clinic-inventory/import'
+    | '/app/inventory/drug-catalogue/import'
     | '/app/prescriptions/edit/$'
     | '/app/reports/$id/edit'
     | '/app/users/edit/$'
@@ -896,6 +922,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPrescriptionsEditSplatRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/inventory/drug-catalogue/import': {
+      id: '/app/inventory/drug-catalogue/import'
+      path: '/inventory/drug-catalogue/import'
+      fullPath: '/app/inventory/drug-catalogue/import'
+      preLoaderRoute: typeof AppInventoryDrugCatalogueImportRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/inventory/clinic-inventory/import': {
+      id: '/app/inventory/clinic-inventory/import'
+      path: '/inventory/clinic-inventory/import'
+      fullPath: '/app/inventory/clinic-inventory/import'
+      preLoaderRoute: typeof AppInventoryClinicInventoryImportRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/event-forms/edit/$': {
       id: '/app/event-forms/edit/$'
       path: '/event-forms/edit/$'
@@ -969,6 +1009,8 @@ interface AppRouteChildren {
   AppClinicsEditSplatRoute: typeof AppClinicsEditSplatRoute
   AppEducationIdEditorRoute: typeof AppEducationIdEditorRoute
   AppEventFormsEditSplatRoute: typeof AppEventFormsEditSplatRoute
+  AppInventoryClinicInventoryImportRoute: typeof AppInventoryClinicInventoryImportRoute
+  AppInventoryDrugCatalogueImportRoute: typeof AppInventoryDrugCatalogueImportRoute
   AppPrescriptionsEditSplatRoute: typeof AppPrescriptionsEditSplatRoute
   AppReportsIdEditRoute: typeof AppReportsIdEditRoute
   AppUsersEditSplatRoute: typeof AppUsersEditSplatRoute
@@ -1005,6 +1047,9 @@ const AppRouteChildren: AppRouteChildren = {
   AppClinicsEditSplatRoute: AppClinicsEditSplatRoute,
   AppEducationIdEditorRoute: AppEducationIdEditorRoute,
   AppEventFormsEditSplatRoute: AppEventFormsEditSplatRoute,
+  AppInventoryClinicInventoryImportRoute:
+    AppInventoryClinicInventoryImportRoute,
+  AppInventoryDrugCatalogueImportRoute: AppInventoryDrugCatalogueImportRoute,
   AppPrescriptionsEditSplatRoute: AppPrescriptionsEditSplatRoute,
   AppReportsIdEditRoute: AppReportsIdEditRoute,
   AppUsersEditSplatRoute: AppUsersEditSplatRoute,

@@ -179,7 +179,8 @@ export const commandProcedures = {
               metadata: sql`${JSON.stringify(pt.metadata ?? {})}::jsonb`,
               photo_url: pt.photo_url ?? null,
               government_id: pt.government_id ?? null,
-              external_patient_id: pt.external_patient_id ?? null,
+              // Leave null so the DB trigger assigns a sequential P-number on insert
+              external_patient_id: pt.external_patient_id?.trim() || null,
               primary_clinic_id: pt.primary_clinic_id ?? null,
               last_modified_by: ctx.userId,
               is_deleted: false,
@@ -207,7 +208,10 @@ export const commandProcedures = {
                 metadata: sql`${JSON.stringify(pt.metadata ?? {})}::jsonb`,
                 photo_url: pt.photo_url ?? null,
                 government_id: pt.government_id ?? null,
-                external_patient_id: pt.external_patient_id ?? null,
+                // On update: keep the stored value when the caller didn't supply one
+                external_patient_id: pt.external_patient_id?.trim()
+                  ? pt.external_patient_id.trim()
+                  : sql`patients.external_patient_id`,
                 primary_clinic_id: pt.primary_clinic_id ?? null,
                 last_modified_by: ctx.userId,
                 updated_at: sql`now()::timestamp with time zone`,
