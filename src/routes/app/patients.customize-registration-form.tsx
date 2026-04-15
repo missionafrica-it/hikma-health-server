@@ -368,11 +368,11 @@ function reducer(state: State, action: Action) {
     case "toggle-field-required": {
       const { id } = action.payload;
       const field = state.fields.find((f) => f.id === id);
-      if (field?.baseField) return;
+      if (!field) break;
+      // Base fields are locked except Patient ID — it can be optional when IDs are DB-generated.
+      if (field.baseField && field.column !== "external_patient_id") break;
 
-      if (field) {
-        field.required = !field.required;
-      }
+      field.required = !field.required;
       break;
     }
     case "toggle-field-searchable": {

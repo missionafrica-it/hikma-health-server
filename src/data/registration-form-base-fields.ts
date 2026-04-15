@@ -203,7 +203,7 @@ export const baseFields: PatientRegistrationForm.T["fields"] = [
     fieldType: "text",
     options: [],
     visible: true,
-    required: true,
+    required: false,
     deleted: false,
     isSearchField: false,
     showsInSummary: false,
