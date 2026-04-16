@@ -20,35 +20,16 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import Event from "@/models/event";
-import { getEventsByFormId } from "@/lib/server-functions/events";
-import { Option } from "effect";
+import {
+  getEventsByFormId,
+  getAllEventsWithPatientsForExport,
+  type EventWithPatient,
+} from "@/lib/server-functions/events";
 import EventForm from "@/models/event-form";
 import { format } from "date-fns";
-import { createServerFn } from "@tanstack/react-start";
-import User from "@/models/user";
-import { getCurrentUser } from "@/lib/server-functions/auth";
-
-// Function endpoint to get all the event data for exports (no pagination)
-// const getEventDataForExport = createServerFn({ method: "GET" }).handler(
-//   async ({ data }: { data: { eventFormId: string } }) => {
-//     const currentUser = await getCurrentUser();
-//     if (!currentUser || currentUser.role !== User.ROLES.SUPER_ADMIN) {
-//       throw new Error("Unauthorized");
-//     }
-
-//     const eventForms = await EventForm.API.getById(data.eventFormId);
-//     const exportEvents = await Event.API.getAllForExport(
-//       data.eventFormId,
-//       true,
-//     );
-
-//     return {
-//       eventForms,
-//       exportEvents,
-//     };
-//   },
-// );
+import { Button } from "@/components/ui/button";
+import { Download } from "lucide-react";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/app/data/events")({
   component: RouteComponent,
@@ -59,10 +40,77 @@ export const Route = createFileRoute("/app/data/events")({
   },
 });
 
+// ── CSV export helper ───────────────────────────────────────
+
+function exportToCsv(
+  filename: string,
+  rows: EventWithPatient[],
+  formFields: readonly EventForm.Field[],
+) {
+  const patientHeaders = [
+    "Patient ID",
+    "Given Name",
+    "Surname",
+    "Date of Birth",
+    "Sex",
+  ];
+  const formHeaders = formFields.map((f) => f.name);
+  const headers = ["Date", ...patientHeaders, ...formHeaders];
+
+  const escape = (v: unknown) => {
+    const s = v == null ? "" : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+
+  const lines = [
+    headers.map(escape).join(","),
+    ...rows.map((event) => {
+      const date = format(new Date(event.created_at), "yyyy-MM-dd HH:mm:ss");
+      const patientCols = [
+        event.patient_external_id ?? event.patient_id,
+        event.patient_given_name ?? "",
+        event.patient_surname ?? "",
+        event.patient_date_of_birth ?? "",
+        event.patient_sex ?? "",
+      ];
+      const formCols = formFields.map((col) => {
+        const field = event.form_data.find((c) => c.fieldId === col.id);
+        if (!field) return "";
+        if (col.fieldType === "diagnosis") {
+          return (field.value as Array<{ code: string; desc: string }>)
+            ?.map((d) => `(${d.code}) ${d.desc}`)
+            .join("; ");
+        }
+        if (col.fieldType === "medicine") {
+          return (
+            field.value as Array<{ name: string; dose: number; doseUnits: string }>
+          )
+            ?.map((m) => `${m.name} ${m.dose}${m.doseUnits}`)
+            .join("; ");
+        }
+        return field.value ?? "";
+      });
+      return [date, ...patientCols, ...formCols].map(escape).join(",");
+    }),
+  ];
+
+  const blob = new Blob([lines.join("\n")], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Route component ─────────────────────────────────────────
+
 function RouteComponent() {
   const { forms } = Route.useLoaderData();
 
-  const [eventsList, setEventsList] = useState<Event.EncodedT[]>([]);
+  const [eventsList, setEventsList] = useState<EventWithPatient[]>([]);
   const [paginationResults, setPaginationResults] = useState<{
     pagination: {
       total: number;
@@ -71,54 +119,51 @@ function RouteComponent() {
       hasMore: boolean;
     };
   }>({
-    pagination: {
-      total: 0,
-      offset: 0,
-      limit: 0,
-      hasMore: false,
-    },
+    pagination: { total: 0, offset: 0, limit: 50, hasMore: false },
   });
 
   const [selectedForm, setSelectedForm] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
-  const pageSize = Option.getOrElse(
-    Option.fromNullable(paginationResults.pagination.limit),
-    () => 10,
-  );
-
-  const totalItems = Option.getOrElse(
-    Option.fromNullable(paginationResults.pagination.total),
-    () => 0,
-  );
-
+  const pageSize = paginationResults.pagination.limit || 50;
+  const totalItems = paginationResults.pagination.total;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
-  // Function to handle search with pagination
   const fetchEvents = (page = 1) => {
+    if (!selectedForm) return;
     setLoading(true);
     const offset = (page - 1) * pageSize;
 
-    getEventsByFormId({
-      data: {
-        form_id: selectedForm!,
-        offset,
-        limit: pageSize,
-      },
-    })
+    getEventsByFormId({ data: { form_id: selectedForm, offset, limit: pageSize } })
       .then((res) => {
-        console.warn({ res });
         setEventsList(res.events);
         setPaginationResults(res);
         setCurrentPage(page);
       })
-      .finally(() => {
-        setLoading(false);
-      });
+      .catch(() => toast.error("Failed to load events"))
+      .finally(() => setLoading(false));
   };
 
-  // Handle page change in a pure function way
+  const handleExport = async () => {
+    if (!selectedForm) return;
+    setExporting(true);
+    try {
+      const { events } = await getAllEventsWithPatientsForExport({
+        data: { form_id: selectedForm },
+      });
+      const formName =
+        forms.find((f) => f.id === selectedForm)?.name ?? "events";
+      exportToCsv(`${formName}.csv`, events, tableColumns);
+      toast.success(`Exported ${events.length} rows`);
+    } catch {
+      toast.error("Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const handlePageChange = (page: number) => {
     if (page >= 1 && page <= totalPages && page !== currentPage) {
       fetchEvents(page);
@@ -126,202 +171,221 @@ function RouteComponent() {
   };
 
   useEffect(() => {
-    if (selectedForm) {
-      fetchEvents();
-    }
+    if (selectedForm) fetchEvents();
   }, [selectedForm]);
 
-  // Generate page numbers to display using functional approach
   const getPageNumbers = () => {
-    // Always include first and last page
     const firstPage = 1;
     const lastPage = totalPages;
-
-    // Include pages around current page
     const nearbyPages = Array.from(
       { length: 3 },
       (_, i) => Math.max(2, currentPage - 1) + i,
-    ).filter((page) => page > firstPage && page < lastPage);
-
-    // Combine and sort pages
+    ).filter((p) => p > firstPage && p < lastPage);
     return Array.from(new Set([firstPage, ...nearbyPages, lastPage])).sort(
       (a, b) => a - b,
     );
   };
 
   const pageNumbers = getPageNumbers();
-
-  // console.log({ eventsList, paginationResults, forms, selectedForm });
-
-  // Table column names are present in the event form
   const tableColumns =
-    forms.find((form) => form.id === selectedForm)?.form_fields || [];
-
-  // console.log({ tableColumns });
+    forms.find((form) => form.id === selectedForm)?.form_fields ?? [];
 
   return (
     <div className="container py-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold">Events Explorer</h1>
+        {selectedForm && (
+          <Button
+            variant="outline"
+            onClick={handleExport}
+            disabled={exporting || totalItems === 0}
+          >
+            <Download className="h-4 w-4 mr-2" />
+            {exporting ? "Exporting..." : `Export CSV (${totalItems})`}
+          </Button>
+        )}
       </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <div>
-          <SelectInput
-            label="Select an event form"
-            className="w-full"
-            defaultValue={selectedForm}
-            onChange={(value) => setSelectedForm(value)}
-            labelClassName="text-[14px] font-semibold nth-2:mt-8"
-            data={[
-              {
-                label: "Active Forms",
-                options: forms
-                  .filter((form) => !form.is_deleted)
-                  .map((form) => ({
-                    label: form.name,
-                    value: form.id,
-                  })),
-              },
-              {
-                label: "Deleted Forms",
-                options: forms
-                  .filter((form) => form.is_deleted)
-                  .map((form) => ({
-                    label: form.name,
-                    value: form.id,
-                  })),
-              },
-            ]}
-          />
-        </div>
+        <SelectInput
+          label="Select an event form"
+          className="w-full"
+          defaultValue={selectedForm ?? undefined}
+          onChange={(value) => setSelectedForm(value)}
+          labelClassName="text-[14px] font-semibold"
+          data={[
+            {
+              label: "Active Forms",
+              options: forms
+                .filter((f) => !f.is_deleted)
+                .map((f) => ({ label: f.name, value: f.id })),
+            },
+            {
+              label: "Deleted Forms",
+              options: forms
+                .filter((f) => f.is_deleted)
+                .map((f) => ({ label: f.name, value: f.id })),
+            },
+          ]}
+        />
       </div>
 
-      <div className="rounded-md border overflow-hidden">
-        <div className="overflow-x-auto">
-          <Table>
-            <TableCaption>Event Forms</TableCaption>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                {tableColumns?.map((column) => (
-                  <TableHead key={column.id}>{column.name}</TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {eventsList.map((event) => (
-                <TableRow key={event.id}>
-                  <TableCell>
-                    {format(event.created_at, "yyyy-MM-dd HH:mm:ss")}
-                  </TableCell>
-                  {tableColumns?.map((column) => {
-                    const field = event.form_data.find(
-                      (c) => c.fieldId === column.id,
-                    );
-                    console.log({
-                      field,
-                      column,
-                      event_form_data: event.form_data,
-                    });
-                    if (column.fieldType === "diagnosis") {
-                      return (
-                        <TableCell key={column.id}>
-                          <RenderDiagnosisField field={field as any} />
+      {!selectedForm ? (
+        <p className="text-sm text-muted-foreground py-8 text-center">
+          Select a form above to view its data.
+        </p>
+      ) : loading ? (
+        <p className="text-sm text-muted-foreground py-8 text-center">
+          Loading...
+        </p>
+      ) : (
+        <>
+          <div className="rounded-md border overflow-hidden">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableCaption>
+                  {totalItems} total records
+                </TableCaption>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="whitespace-nowrap">Date</TableHead>
+                    <TableHead className="whitespace-nowrap">Patient ID</TableHead>
+                    <TableHead className="whitespace-nowrap">Given Name</TableHead>
+                    <TableHead className="whitespace-nowrap">Surname</TableHead>
+                    <TableHead className="whitespace-nowrap">DOB</TableHead>
+                    <TableHead className="whitespace-nowrap">Sex</TableHead>
+                    {tableColumns.map((col) => (
+                      <TableHead key={col.id} className="whitespace-nowrap">
+                        {col.name}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {eventsList.length === 0 ? (
+                    <TableRow>
+                      <TableCell
+                        colSpan={6 + tableColumns.length}
+                        className="text-center text-muted-foreground py-8"
+                      >
+                        No records found.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    eventsList.map((event) => (
+                      <TableRow key={event.id}>
+                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                          {format(new Date(event.created_at), "yyyy-MM-dd HH:mm")}
                         </TableCell>
-                      );
-                    }
-                    if (column.fieldType === "medicine") {
-                      return (
-                        <TableCell key={column.id}>
-                          <RenderMedicineField field={field as any} />
+                        <TableCell className="text-xs font-mono">
+                          {event.patient_external_id || event.patient_id.slice(0, 8) + "…"}
                         </TableCell>
-                      );
-                    }
-                    return (
-                      <TableCell key={column.id}>{field?.value}</TableCell>
-                    );
-                  })}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
-
-      <div className="py-8">
-        <Pagination>
-          <PaginationContent>
-            <PaginationItem>
-              <PaginationPrevious
-                onClick={() => handlePageChange(currentPage - 1)}
-                className={
-                  currentPage <= 1
-                    ? "pointer-events-none opacity-50"
-                    : "cursor-pointer"
-                }
-              />
-            </PaginationItem>
-
-            {pageNumbers.map((pageNumber, index) => {
-              // Add ellipsis if there's a gap between page numbers
-              const shouldShowEllipsis =
-                index > 0 && pageNumber > pageNumbers[index - 1] + 1;
-
-              return (
-                <Fragment key={`page-${pageNumber}`}>
-                  {shouldShowEllipsis && (
-                    <PaginationItem>
-                      <PaginationEllipsis />
-                    </PaginationItem>
+                        <TableCell>{event.patient_given_name ?? "—"}</TableCell>
+                        <TableCell>{event.patient_surname ?? "—"}</TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          {event.patient_date_of_birth ?? "—"}
+                        </TableCell>
+                        <TableCell>{event.patient_sex ?? "—"}</TableCell>
+                        {tableColumns.map((col) => {
+                          const field = event.form_data.find(
+                            (c) => c.fieldId === col.id,
+                          );
+                          if (col.fieldType === "diagnosis") {
+                            return (
+                              <TableCell key={col.id}>
+                                <RenderDiagnosisField field={field as any} />
+                              </TableCell>
+                            );
+                          }
+                          if (col.fieldType === "medicine") {
+                            return (
+                              <TableCell key={col.id}>
+                                <RenderMedicineField field={field as any} />
+                              </TableCell>
+                            );
+                          }
+                          return (
+                            <TableCell key={col.id}>{field?.value ?? "—"}</TableCell>
+                          );
+                        })}
+                      </TableRow>
+                    ))
                   )}
-                  <PaginationItem>
-                    <PaginationLink
-                      onClick={() => handlePageChange(pageNumber)}
-                      isActive={pageNumber === currentPage}
-                      className="cursor-pointer"
-                    >
-                      {pageNumber}
-                    </PaginationLink>
-                  </PaginationItem>
-                </Fragment>
-              );
-            })}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
 
-            <PaginationItem>
-              <PaginationNext
-                onClick={() => handlePageChange(currentPage + 1)}
-                className={
-                  currentPage >= totalPages
-                    ? "pointer-events-none opacity-50"
-                    : "cursor-pointer"
-                }
-              />
-            </PaginationItem>
-          </PaginationContent>
-        </Pagination>
-      </div>
+          <div className="py-8">
+            <Pagination>
+              <PaginationContent>
+                <PaginationItem>
+                  <PaginationPrevious
+                    onClick={() => handlePageChange(currentPage - 1)}
+                    className={
+                      currentPage <= 1
+                        ? "pointer-events-none opacity-50"
+                        : "cursor-pointer"
+                    }
+                  />
+                </PaginationItem>
+
+                {pageNumbers.map((pageNumber, index) => {
+                  const showEllipsis =
+                    index > 0 && pageNumber > pageNumbers[index - 1] + 1;
+                  return (
+                    <Fragment key={`page-${pageNumber}`}>
+                      {showEllipsis && (
+                        <PaginationItem>
+                          <PaginationEllipsis />
+                        </PaginationItem>
+                      )}
+                      <PaginationItem>
+                        <PaginationLink
+                          onClick={() => handlePageChange(pageNumber)}
+                          isActive={pageNumber === currentPage}
+                          className="cursor-pointer"
+                        >
+                          {pageNumber}
+                        </PaginationLink>
+                      </PaginationItem>
+                    </Fragment>
+                  );
+                })}
+
+                <PaginationItem>
+                  <PaginationNext
+                    onClick={() => handlePageChange(currentPage + 1)}
+                    className={
+                      currentPage >= totalPages
+                        ? "pointer-events-none opacity-50"
+                        : "cursor-pointer"
+                    }
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-// TODO: improve the types of form_data to be specific to diagnosis
 function RenderDiagnosisField({
   field,
 }: {
   field?: { value: Array<{ code: string; desc: string }> };
 }) {
-  console.log(field?.value?.map((diagnosis) => diagnosis?.desc).join(", "));
-  console.log(field?.value);
   return (
     <div>
       {field?.value
-        ?.map((diagnosis) => `(${diagnosis?.code}) ${diagnosis?.desc}`)
-        ?.join(", ")}
+        ?.map((d) => `(${d.code}) ${d.desc}`)
+        .join(", ")}
     </div>
   );
 }
 
-// TODO: improve the types of form_data to be specific to diagnosis
 function RenderMedicineField({
   field,
 }: {
@@ -329,32 +393,20 @@ function RenderMedicineField({
     value: Array<{
       dose: number;
       doseUnits: string;
-      duration: number;
-      durationUnits: string;
       form: string;
       frequency: string;
-      intervals: string;
       name: string;
       route: string;
     }>;
   };
 }) {
-  console.log(field?.value?.map((medicine) => medicine?.name)?.join(", "));
-  console.log(field?.value);
   return (
-    <div>
-      {field?.value?.map((medicine) => (
-        <>
-          <div className="medicine-entry">
-            <p className="medicine-name">
-              {medicine?.name} ({medicine?.dose} {medicine?.doseUnits})
-            </p>
-            <p className="medicine-details">
-              {medicine?.form} - {medicine?.route}
-            </p>
-            <p className="medicine-schedule">Frequency {medicine?.frequency}</p>
-          </div>
-        </>
+    <div className="space-y-1">
+      {field?.value?.map((m, i) => (
+        <div key={i} className="text-xs">
+          <span className="font-medium">{m.name}</span>{" "}
+          ({m.dose} {m.doseUnits}) — {m.form}, {m.route}, {m.frequency}
+        </div>
       ))}
     </div>
   );

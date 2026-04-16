@@ -14,9 +14,16 @@ import {
 import { logAuditEvent } from "./audit";
 import { Result } from "@/lib/result";
 
+export type EventWithPatient = Event.EncodedT & {
+  patient_given_name: string | null;
+  patient_surname: string | null;
+  patient_date_of_birth: string | null;
+  patient_sex: string | null;
+  patient_external_id: string | null;
+};
+
 /**
- * Get all events by form id with pagination
- * @returns {Promise<{ events: Event.EncodedT[], pagination: { total: number, offset: number, limit: number, hasMore: boolean } }>} - The list of events and pagination info
+ * Get all events by form id with pagination, joined with patient data
  */
 export const getEventsByFormId = createServerFn({ method: "GET" })
   .inputValidator(
@@ -26,7 +33,7 @@ export const getEventsByFormId = createServerFn({ method: "GET" })
     async ({
       data,
     }): Promise<{
-      events: Event.EncodedT[];
+      events: EventWithPatient[];
       pagination: {
         total: number;
         offset: number;
@@ -34,23 +41,74 @@ export const getEventsByFormId = createServerFn({ method: "GET" })
         hasMore: boolean;
       };
     }> => {
-      const limit = data.limit || 50;
-      const offset = data.offset || 0;
-      const result = await Event.API.getAllByFormId(data.form_id, {
-        limit,
-        offset,
-        includeCount: true,
-      });
+      const limit = data.limit ?? 50;
+      const offset = data.offset ?? 0;
+
+      const rows = await db
+        .selectFrom("events as e")
+        .leftJoin("patients as p", "p.id", "e.patient_id")
+        .selectAll("e")
+        .select([
+          "p.given_name as patient_given_name",
+          "p.surname as patient_surname",
+          "p.sex as patient_sex",
+          "p.external_patient_id as patient_external_id",
+          sql<string | null>`p.date_of_birth::text`.as("patient_date_of_birth"),
+        ])
+        .where("e.form_id", "=", data.form_id)
+        .where("e.is_deleted", "=", false)
+        .orderBy("e.created_at", "desc")
+        .limit(limit)
+        .offset(offset)
+        .execute();
+
+      const countResult = await db
+        .selectFrom("events")
+        .select(db.fn.countAll().as("count"))
+        .where("form_id", "=", data.form_id)
+        .where("is_deleted", "=", false)
+        .executeTakeFirstOrThrow();
+
+      const total = Number(countResult.count);
 
       return {
-        events: result.events,
+        events: rows as unknown as EventWithPatient[],
         pagination: {
-          total: result.total,
+          total,
           offset,
           limit,
-          hasMore: offset + result.events.length < result.total,
+          hasMore: offset + rows.length < total,
         },
       };
+    },
+  );
+
+/**
+ * Get ALL events for a form (no pagination) with patient data — for CSV export
+ */
+export const getAllEventsWithPatientsForExport = createServerFn({
+  method: "GET",
+})
+  .inputValidator((data: { form_id: string }) => data)
+  .handler(
+    async ({ data }): Promise<{ events: EventWithPatient[] }> => {
+      const rows = await db
+        .selectFrom("events as e")
+        .leftJoin("patients as p", "p.id", "e.patient_id")
+        .selectAll("e")
+        .select([
+          "p.given_name as patient_given_name",
+          "p.surname as patient_surname",
+          "p.sex as patient_sex",
+          "p.external_patient_id as patient_external_id",
+          sql<string | null>`p.date_of_birth::text`.as("patient_date_of_birth"),
+        ])
+        .where("e.form_id", "=", data.form_id)
+        .where("e.is_deleted", "=", false)
+        .orderBy("e.created_at", "desc")
+        .execute();
+
+      return { events: rows as unknown as EventWithPatient[] };
     },
   );
 

@@ -378,7 +378,10 @@ Display config shapes:
 
 SQL rules:
 - Pure SELECT only — no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER
-- Use $1 for the start date (ISO string) and $2 for the end date (ISO string) as parameters wherever date filtering applies
+- Date filtering: ALWAYS use $1::timestamptz for start date and $2::timestamptz for end date. Example: WHERE created_at >= $1::timestamptz AND created_at <= $2::timestamptz
+- NEVER compare a timestamp column directly to an INTERVAL. This is wrong: "created_at < INTERVAL '30 days'". This is correct: "created_at >= NOW() - INTERVAL '30 days'"
+- NEVER write expressions like "col < INTERVAL '...'" or "col > INTERVAL '...'". Intervals are durations, not timestamps.
+- If the user's request doesn't need date filtering, omit $1/$2 entirely — do not use them as dummy values
 - Column aliases must exactly match the field names referenced in the display config
 - Return only columns needed by the display config
 - Grid: x/y/w/h in columns (max width 12). Use h=2 for stat_card, h=4 for charts/tables. Fill the grid left-to-right.`;
@@ -532,7 +535,12 @@ Return ONLY a JSON array of components inside a \`\`\`json block. No other text.
       const userMessage = `Report name: ${data.name}
 User request: ${data.user_description}
 
-Generate 2–5 meaningful dashboard components that answer this request. Use appropriate chart types. Ensure SQL is valid PostgreSQL using $1 (start date) and $2 (end date) parameters where relevant.`;
+Generate 2–5 meaningful dashboard components that answer this request. Use appropriate chart types.
+
+CRITICAL SQL DATE RULES:
+- For date filtering use: column >= $1::timestamptz AND column <= $2::timestamptz
+- NEVER write: column < INTERVAL '...' or column > INTERVAL '...'
+- Intervals cannot be compared to timestamps directly in PostgreSQL`;
 
       const aiComponents = await callClaudeForComponents(anthropicApiKey, systemPrompt, userMessage);
       const parsedComponents = parseAIResponse(aiComponents, reportId);
