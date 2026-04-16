@@ -1,15 +1,12 @@
-import { createServerFn, createServerOnlyFn } from "@tanstack/react-start";
-import Appointment from "@/models/appointment";
+import { createServerFn } from "@tanstack/react-start";
+import Anthropic from "@anthropic-ai/sdk";
 import User from "@/models/user";
 import {
   constructLayoutConfig,
   constructReport,
-  constructReportComponent,
-  fixedRange,
   type report as Report,
   type reportComponent,
   type componentDisplay,
-  type gridPosition,
   type timeRange,
 } from "./report.gen";
 import PatientRegistrationForm from "@/models/patient-registration-form";
@@ -21,7 +18,6 @@ import PatientAdditionalAttribute from "@/models/patient-additional-attribute";
 import {
   isUserSuperAdmin,
   getCurrentUserId,
-  userRoleTokenHasCapability,
 } from "../auth/request";
 import ReportModel from "@/models/report";
 import db from "@/db";
@@ -29,7 +25,6 @@ import Event from "@/models/event";
 import Visit from "@/models/visit";
 import Clinic from "@/models/clinic";
 import { uuidv7 } from "uuidv7";
-import type { TableMeta } from "@tanstack/react-table";
 import { z } from "zod";
 import { sql, type TableMetadata } from "kysely";
 
@@ -295,16 +290,6 @@ const INCLUDED_TABLES = [
 
 import ServerVariable from "@/models/server_variable";
 import { Result } from "../result";
-import { match } from "ts-pattern";
-
-type ManagerReportRequest = {
-  user_prompt: string;
-  patient_registration_form: Record<string, unknown>;
-  event_forms: any[];
-  db_schema: TableMetadata[];
-  report?: Record<string, unknown>;
-  ai_api_key: string;
-};
 
 // ── Shared input type for report endpoints ──────────────────
 
@@ -318,10 +303,10 @@ export type ReportInput = {
 
 export type component_request = {
   user_prompt: string;
-  patient_registration_form: ManagerReportRequest["patient_registration_form"];
-  event_forms: ManagerReportRequest["event_forms"];
-  db_schema: ManagerReportRequest["db_schema"];
-  ai_api_key?: string;
+  report_id?: string;
+  name: string;
+  description?: string;
+  time_range: timeRange;
   /** When present, the LLM edits this component. When absent, it creates from scratch. */
   component?: {
     title: string;
@@ -343,15 +328,120 @@ export const prompt_refine_response_schema = z.object({
   suggestions: z.array(prompt_suggestion_schema).length(3),
 });
 
+// ── Claude helpers ──────────────────────────────────────────
+
+const buildSchemaContext = (
+  tables: TableMetadata[],
+  patient_registration_forms: any[],
+  event_forms: any[],
+) => {
+  const schemaText = tables
+    .map((t) => {
+      const cols = t.columns
+        .map((c) => `  ${c.name} ${c.dataType}${c.isNullable ? "" : " NOT NULL"}`)
+        .join("\n");
+      return `Table: ${t.name}\n${cols}`;
+    })
+    .join("\n\n");
+
+  return `## Database Schema
+${schemaText}
+
+## Patient Registration Form Structure
+${JSON.stringify(patient_registration_forms[0] ?? {}, null, 2)}
+
+## Event Forms
+${JSON.stringify(event_forms, null, 2)}`;
+};
+
+const COMPONENT_JSON_SCHEMA = `
+Each component must have this exact JSON shape:
+{
+  "title": "string",
+  "description": "string (optional)",
+  "prql_source": "string — human-readable description of the query",
+  "compiled_sql": "string — valid PostgreSQL SELECT query",
+  "compile_error": null,
+  "display": {
+    "type": "stat_card" | "table" | "bar_chart" | "line_chart" | "pie_chart",
+    "config": { ... display-specific fields below ... }
+  },
+  "position": { "x": number, "y": number, "w": number, "h": number }
+}
+
+Display config shapes:
+- stat_card:   { "value_field": "col", "label": "text", "format": "number"|"currency"|"percent" (optional), "comparison_field": "col" (optional) }
+- table:       { "columns": [{ "key": "col", "label": "text", "format": "number"|"currency"|"percent"|"date" (optional), "sortable": bool (optional) }] }
+- bar_chart:   { "x_axis": "col", "y_axis": "col", "orientation": "horizontal"|"vertical" (optional), "stacked": bool (optional), "sort_by": "col" (optional), "sort_dir": "asc"|"desc" (optional) }
+- line_chart:  { "x_axis": "col", "y_axis": "col", "series_field": "col" (optional) }
+- pie_chart:   { "label_field": "col", "value_field": "col" }
+
+SQL rules:
+- Pure SELECT only — no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER
+- Use $1 for the start date (ISO string) and $2 for the end date (ISO string) as parameters wherever date filtering applies
+- Column aliases must exactly match the field names referenced in the display config
+- Return only columns needed by the display config
+- Grid: x/y/w/h in columns (max width 12). Use h=2 for stat_card, h=4 for charts/tables. Fill the grid left-to-right.`;
+
+async function callClaudeForComponents(
+  anthropicApiKey: string,
+  systemPrompt: string,
+  userMessage: string,
+): Promise<AIReportComponent[]> {
+  const client = new Anthropic({ apiKey: anthropicApiKey });
+
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-5",
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+  });
+
+  const text = message.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; text: string }).text)
+    .join("");
+
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) ?? text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
+  const raw = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : text;
+  const parsed = JSON.parse(raw.trim());
+  return Array.isArray(parsed) ? parsed : (parsed.components ?? []);
+}
+
+async function callClaudeForPromptRefine(
+  anthropicApiKey: string,
+  systemPrompt: string,
+  userMessage: string,
+): Promise<z.infer<typeof prompt_refine_response_schema>> {
+  const client = new Anthropic({ apiKey: anthropicApiKey });
+
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-5",
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+  });
+
+  const text = message.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as { type: "text"; text: string }).text)
+    .join("");
+
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
+  const raw = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : text;
+  const parsed = JSON.parse(raw.trim());
+  return prompt_refine_response_schema.parse(parsed);
+}
+
+// ── Server functions ────────────────────────────────────────
+
 export const refineReportPrompt = createServerFn({ method: "POST" })
   .inputValidator((data: ReportInput) => data)
   .handler(
     async ({
       data,
     }): Promise<z.infer<typeof prompt_refine_response_schema>> => {
-      // TODO: replace with only super_admin permission role
       const authorized = await isUserSuperAdmin();
-
       if (!authorized) {
         return Promise.reject({
           message: "Unauthorized: Insufficient permissions",
@@ -364,34 +454,8 @@ export const refineReportPrompt = createServerFn({ method: "POST" })
         return Promise.reject(dbInfo.error);
       }
 
-      const {
-        event_forms,
-        patient_registration_forms,
-        tables,
-        aiServiceUrl,
-        anthropicApiKey,
-        aiProxyApiKey,
-      } = dbInfo.data;
+      const { event_forms, patient_registration_forms, tables, anthropicApiKey } = dbInfo.data;
 
-      const reportId = data.report_id ?? uuidv7();
-      const layout = constructLayoutConfig(12);
-      const reportComponents: reportComponent[] = [];
-
-      const initialReport = constructReport(
-        reportId,
-        data.name,
-        data.description ?? "",
-        data.time_range,
-        layout,
-        reportComponents,
-      );
-
-      if (!aiServiceUrl) {
-        return Promise.reject({
-          message: "AI service URL is not configured",
-          source: "refineReportPrompt",
-        });
-      }
       if (!anthropicApiKey) {
         return Promise.reject({
           message: "Anthropic API key is not configured",
@@ -399,47 +463,38 @@ export const refineReportPrompt = createServerFn({ method: "POST" })
         });
       }
 
-      if (!aiProxyApiKey) {
-        return Promise.reject({
-          message: "AI Proxy API key is not configured",
-          source: "refineReportPrompt",
-        });
-      }
+      const schemaContext = buildSchemaContext(tables, patient_registration_forms, event_forms);
 
-      const aiRequest: ManagerReportRequest = {
-        user_prompt: data.user_description,
-        db_schema: tables,
-        event_forms,
-        patient_registration_form: patient_registration_forms[0],
-        report: initialReport,
-        ai_api_key: anthropicApiKey,
-      };
+      const systemPrompt = `You are a health data analyst assistant. Your job is to refine natural-language report prompts so they are specific, actionable, and answerable from the available database schema.
 
-      const res = await fetch(`${aiServiceUrl}/reports/prompt-refine`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": aiProxyApiKey,
-        },
-        body: JSON.stringify(aiRequest),
-      });
+${schemaContext}
 
-      const data_ = await res.json();
-      return data_;
+Return ONLY a JSON object (no markdown except for the json block) matching this schema:
+{
+  "suggestions": [
+    { "refined_prompt": "...", "reasoning": "..." },
+    { "refined_prompt": "...", "reasoning": "..." },
+    { "refined_prompt": "...", "reasoning": "..." }
+  ]
+}
+
+Each suggestion should be a distinct, improved version of the user's prompt. Make them specific, use actual table/column names where helpful, and explain why each refinement improves the original.`;
+
+      const userMessage = `Report name: ${data.name}
+User prompt: ${data.user_description}`;
+
+      return callClaudeForPromptRefine(anthropicApiKey, systemPrompt, userMessage);
     },
   );
 
 /**
- * Update (or create) a report using the hh ai service
- *  * @returns {Promise<Report>} - The updated report
+ * Generate or update a report using Claude directly.
  */
 export const editReport = createServerFn({ method: "POST" })
-  .inputValidator((data: component_request) => data)
+  .inputValidator((data: ReportInput) => data)
   .handler(
-    async ({ data }): Promise<{ status: "ok"; component: reportComponent }> => {
-      // TODO: replace with only super_admin permission role
+    async ({ data }): Promise<{ report: Report; data: ComponentData[] }> => {
       const authorized = await isUserSuperAdmin();
-
       if (!authorized) {
         return Promise.reject({
           message: "Unauthorized: Insufficient permissions",
@@ -452,76 +507,34 @@ export const editReport = createServerFn({ method: "POST" })
         return Promise.reject(dbInfo.error);
       }
 
-      const {
-        event_forms,
-        patient_registration_forms,
-        tables,
-        aiServiceUrl,
-        anthropicApiKey,
-        aiProxyApiKey,
-      } = dbInfo.data;
+      const { event_forms, patient_registration_forms, tables, anthropicApiKey } = dbInfo.data;
 
-      const reportId = data.report_id ?? uuidv7();
-      const layout = constructLayoutConfig(12);
-      const reportComponents: reportComponent[] = [];
-
-      const initialReport = constructReport(
-        reportId,
-        data.name,
-        data.description ?? "",
-        data.time_range,
-        layout,
-        reportComponents,
-      );
-
-      if (!aiServiceUrl) {
-        return Promise.reject({
-          message: "AI service URL is not configured",
-          source: "editReport",
-        });
-      }
       if (!anthropicApiKey) {
         return Promise.reject({
           message: "Anthropic API key is not configured",
           source: "editReport",
         });
       }
-      if (!aiProxyApiKey) {
-        return Promise.reject({
-          message: "AI Proxy API key is not configured",
-          source: "refineReportPrompt",
-        });
-      }
 
-      const aiRequest: ManagerReportRequest = {
-        user_prompt: data.user_description,
-        db_schema: tables,
-        event_forms,
-        patient_registration_form: patient_registration_forms[0],
-        report: initialReport,
-        ai_api_key: anthropicApiKey,
-      };
+      const reportId = data.report_id ?? uuidv7();
+      const layout = constructLayoutConfig(12);
 
-      const res = await fetch(`${aiServiceUrl}/reports/manage`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": aiProxyApiKey,
-        },
-        body: JSON.stringify(aiRequest),
-      });
+      const schemaContext = buildSchemaContext(tables, patient_registration_forms, event_forms);
 
-      if (!res.ok) {
-        return Promise.reject({
-          message: `AI service error: ${res.status}`,
-          source: "editReport",
-        });
-      }
+      const systemPrompt = `You are a health data analyst. Generate dashboard report components as a JSON array based on the user's prompt and the database schema below.
 
-      const aiResponse = await res.json();
-      const aiComponents: AIReportComponent[] = Array.isArray(aiResponse)
-        ? aiResponse
-        : (aiResponse.components ?? []);
+${schemaContext}
+
+${COMPONENT_JSON_SCHEMA}
+
+Return ONLY a JSON array of components inside a \`\`\`json block. No other text.`;
+
+      const userMessage = `Report name: ${data.name}
+User request: ${data.user_description}
+
+Generate 2–5 meaningful dashboard components that answer this request. Use appropriate chart types. Ensure SQL is valid PostgreSQL using $1 (start date) and $2 (end date) parameters where relevant.`;
+
+      const aiComponents = await callClaudeForComponents(anthropicApiKey, systemPrompt, userMessage);
       const parsedComponents = parseAIResponse(aiComponents, reportId);
 
       const report = constructReport(
@@ -533,7 +546,6 @@ export const editReport = createServerFn({ method: "POST" })
         parsedComponents,
       );
 
-      // Persist the report
       const userId = await getCurrentUserId();
       const savedReport = await ReportModel.API.update({
         report,
@@ -542,19 +554,14 @@ export const editReport = createServerFn({ method: "POST" })
       });
 
       const { startAt, endAt } = ReportModel.resolveTimeRange(data.time_range);
-      const data_ = await fetchAllComponentDataInternal(
-        parsedComponents,
-        startAt,
-        endAt,
-      );
-      return { report: savedReport, data: data_ };
+      const componentData = await fetchAllComponentDataInternal(parsedComponents, startAt, endAt);
+
+      return { report: savedReport, data: componentData };
     },
   );
 
 /**
- * Update (or create) a single report component using the hh ai service.
- * Sends the existing component context to POST /reports/update-component
- * and returns the updated parsed component.
+ * Update a single report component using Claude directly.
  */
 export const editReportComponent = createServerFn({ method: "POST" })
   .inputValidator(
@@ -579,77 +586,58 @@ export const editReportComponent = createServerFn({ method: "POST" })
       });
     }
 
-    console.log("[editReportComponent]");
-    console.log(data);
-
     const dbInfo = await getAIReportingInfo();
     if (Result.isErr(dbInfo)) {
       return Promise.reject(dbInfo.error);
     }
 
-    const {
-      event_forms,
-      patient_registration_forms,
-      tables,
-      aiServiceUrl,
-      anthropicApiKey,
-      aiProxyApiKey,
-    } = dbInfo.data;
+    const { event_forms, patient_registration_forms, tables, anthropicApiKey } = dbInfo.data;
 
-    if (!aiServiceUrl) {
-      return Promise.reject({
-        message: "AI service URL is not configured",
-        source: "editReportComponent",
-      });
-    }
     if (!anthropicApiKey) {
       return Promise.reject({
         message: "Anthropic API key is not configured",
         source: "editReportComponent",
       });
     }
-    if (!aiProxyApiKey) {
-      return Promise.reject({
-        message: "AI Proxy API key is not configured",
-        source: "editReportComponent",
-      });
-    }
 
-    const aiRequest: component_request = {
-      user_prompt: data.user_prompt,
-      db_schema: tables,
-      event_forms,
-      patient_registration_form: patient_registration_forms[0],
-      ai_api_key: anthropicApiKey,
-      component: data.component,
-    };
+    const schemaContext = buildSchemaContext(tables, patient_registration_forms, event_forms);
 
-    const res = await fetch(`${aiServiceUrl}/reports/update-component`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": aiProxyApiKey,
-      },
-      body: JSON.stringify(aiRequest),
+    const systemPrompt = `You are a health data analyst. Update an existing dashboard component based on the user's instruction.
+
+${schemaContext}
+
+${COMPONENT_JSON_SCHEMA}
+
+Return ONLY a JSON object with a single component (not an array) inside a \`\`\`json block. Preserve the original position unless the user asks to move it.`;
+
+    const userMessage = `Existing component:
+${JSON.stringify(data.component, null, 2)}
+
+User instruction: ${data.user_prompt}
+
+Return the updated component JSON.`;
+
+    const client = new Anthropic({ apiKey: anthropicApiKey });
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-5",
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMessage }],
     });
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      return Promise.reject({
-        message: `AI service error: ${res.status}${body ? ` — ${body}` : ""}`,
-        source: "editReportComponent",
-      });
-    }
+    const text = message.content
+      .filter((b) => b.type === "text")
+      .map((b) => (b as { type: "text"; text: string }).text)
+      .join("");
 
-    const aiResponse: { status: "ok" | string; component?: AIReportComponent } =
-      await res.json();
-    const parsed = aiResponse.component
-      ? parseAIReportComponent(aiResponse.component, data.report_id)
-      : null;
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
+    const raw = jsonMatch ? jsonMatch[1] ?? jsonMatch[0] : text;
+    const rawComponent: AIReportComponent = JSON.parse(raw.trim());
 
+    const parsed = parseAIReportComponent(rawComponent, data.report_id);
     if (!parsed) {
       return Promise.reject({
-        message: "Failed to parse AI response into a valid component",
+        message: "Failed to parse Claude response into a valid component",
         source: "editReportComponent",
       });
     }
@@ -658,7 +646,7 @@ export const editReportComponent = createServerFn({ method: "POST" })
   });
 
 /**
- * Helper function that just gets all the needed variables and needed data from the database
+ * Loads DB schema, forms, and the Anthropic API key.
  */
 const getAIReportingInfo = createServerFn().handler(async () => {
   const isAdmin = await isUserSuperAdmin();
@@ -668,27 +656,22 @@ const getAIReportingInfo = createServerFn().handler(async () => {
       message: "Only system administrators are allowed to use this method",
     });
   }
-  const patient_registration_forms = await PatientRegistrationForm.getAll(); // need to eventually pick just one
+
+  const patient_registration_forms = await PatientRegistrationForm.getAll();
   const event_forms = await EventForm.API.getAll();
 
   const tables = (
-    await db.introspection.getTables({
-      withInternalKyselyTables: false,
-    })
+    await db.introspection.getTables({ withInternalKyselyTables: false })
   ).filter((table) => INCLUDED_TABLES.includes(table.name));
 
-  const [aiServiceUrl, anthropicApiKey, aiProxyApiKey] = await Promise.all([
-    ServerVariable.getAsString(ServerVariable.Keys.AI_DATA_ANALYSIS_URL),
-    ServerVariable.getAsString(ServerVariable.Keys.ANTHROPIC_API_KEY),
-    ServerVariable.getAsString(ServerVariable.Keys.AI_PROXY_SERVICE_API_KEY),
-  ]);
+  const anthropicApiKey = await ServerVariable.getAsString(
+    ServerVariable.Keys.ANTHROPIC_API_KEY,
+  );
 
   return Result.ok({
     tables,
     patient_registration_forms,
     event_forms,
-    aiServiceUrl,
     anthropicApiKey,
-    aiProxyApiKey,
   });
 });

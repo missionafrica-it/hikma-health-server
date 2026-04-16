@@ -16,14 +16,12 @@ import {
   refineReportPrompt,
   fetchAllComponentData,
   type ReportWithData,
-  type ComponentData,
 } from "@/lib/ai-service/reports-editor";
 import Report from "@/models/report";
 import type { report as ReportType } from "@/lib/ai-service/report.gen";
 import { getCurrentUserId } from "@/lib/server-functions/auth";
 import { superAdminMiddleware } from "@/middleware/auth";
 import { isUserSuperAdmin } from "@/lib/auth/request";
-import { updateComponentSql } from "@/lib/server-functions/reports";
 import { NewReportComponentDialog } from "@/components/reports/new-report-component-dialog";
 
 const getReport = createServerFn({ method: "GET" })
@@ -100,6 +98,7 @@ function RouteComponent() {
 
   const buildInput = useCallback(
     () => ({
+      report_id: isNew ? undefined : existingReport?.id,
       user_description: state.prompt,
       name: state.name,
       description: state.prompt || undefined,
@@ -113,6 +112,8 @@ function RouteComponent() {
             },
     }),
     [
+      isNew,
+      existingReport?.id,
       state.prompt,
       state.name,
       state.timeRangeMode,
@@ -151,7 +152,7 @@ function RouteComponent() {
         data: buildInput(),
       });
       dispatch({ type: "GENERATE_SUCCESS" });
-      setResult(res);
+      setResult(res as ReportWithData);
     } catch (err: any) {
       dispatch({
         type: "GENERATE_ERROR",

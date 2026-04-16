@@ -25,14 +25,10 @@ const getAllReports = createServerFn({ method: "GET" })
 const checkAiConfig = createServerFn({ method: "GET" })
   .middleware([superAdminMiddleware])
   .handler(async () => {
-    const [url, proxyKey] = await Promise.all([
-      ServerVariable.getAsString(ServerVariable.Keys.AI_DATA_ANALYSIS_URL),
-      ServerVariable.getAsString(ServerVariable.Keys.AI_PROXY_SERVICE_API_KEY),
-    ]);
-    return {
-      hasUrl: !!url,
-      hasProxyKey: !!proxyKey,
-    };
+    const anthropicKey = await ServerVariable.getAsString(
+      ServerVariable.Keys.ANTHROPIC_API_KEY,
+    );
+    return { hasAnthropicKey: !!anthropicKey };
   });
 
 export const Route = createFileRoute("/app/reports/")({
@@ -43,7 +39,7 @@ export const Route = createFileRoute("/app/reports/")({
   beforeLoad: async () => {
     const [reports, aiConfig] = await Promise.all([
       getAllReports(),
-      checkAiConfig().catch(() => ({ hasUrl: false, hasProxyKey: false })),
+      checkAiConfig().catch(() => ({ hasAnthropicKey: false })),
     ]);
     return { reports, aiConfig };
   },
@@ -52,7 +48,7 @@ export const Route = createFileRoute("/app/reports/")({
 function RouteComponent() {
   const { reports, aiConfig } = Route.useLoaderData();
   const navigate = useNavigate();
-  const aiConfigured = aiConfig.hasUrl && aiConfig.hasProxyKey;
+  const aiConfigured = aiConfig.hasAnthropicKey;
 
   return (
     <div className="p-6 space-y-6">
@@ -74,12 +70,9 @@ function RouteComponent() {
 
       {!aiConfigured && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 space-y-1">
-          <p className="font-medium">AI service not configured</p>
+          <p className="font-medium">AI not configured</p>
           <p>
-            To generate reports with AI, set the{" "}
-            {!aiConfig.hasUrl && "AI service URL"}
-            {!aiConfig.hasUrl && !aiConfig.hasProxyKey && " and "}
-            {!aiConfig.hasProxyKey && "AI proxy service API key"} in the{" "}
+            To generate reports with AI, set your Anthropic API key in the{" "}
             <Link
               to="/app/settings/configurations"
               className="underline font-medium"
