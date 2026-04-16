@@ -13,13 +13,22 @@ import Report from "@/models/report";
 import ServerVariable from "@/models/server_variable";
 import { superAdminMiddleware } from "@/middleware/auth";
 import { truncate } from "es-toolkit/compat";
-import { AlertTriangleIcon } from "lucide-react";
+import { AlertTriangleIcon, Trash2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useState } from "react";
+import { toast } from "sonner";
 
 const getAllReports = createServerFn({ method: "GET" })
   .middleware([superAdminMiddleware])
   .handler(async () => {
     return await Report.API.getAll();
+  });
+
+const deleteReport = createServerFn({ method: "POST" })
+  .inputValidator((data: { id: string }) => data)
+  .middleware([superAdminMiddleware])
+  .handler(async ({ data }) => {
+    await Report.API.softDelete(data.id);
   });
 
 const checkAiConfig = createServerFn({ method: "GET" })
@@ -46,9 +55,26 @@ export const Route = createFileRoute("/app/reports/")({
 });
 
 function RouteComponent() {
-  const { reports, aiConfig } = Route.useLoaderData();
+  const { reports: initialReports, aiConfig } = Route.useLoaderData();
   const navigate = useNavigate();
   const aiConfigured = aiConfig.hasAnthropicKey;
+  const [reports, setReports] = useState(initialReports);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const handleDelete = async (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete report "${name}"? This cannot be undone.`)) return;
+    setDeletingId(id);
+    try {
+      await deleteReport({ data: { id } });
+      setReports((prev) => prev.filter((r) => r.id !== id));
+      toast.success("Report deleted");
+    } catch {
+      toast.error("Failed to delete report");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div className="p-6 space-y-6">
@@ -105,6 +131,7 @@ function RouteComponent() {
                 <TableHead className="px-6">Name</TableHead>
                 <TableHead className="px-6">Description</TableHead>
                 <TableHead className="px-6">Updated</TableHead>
+                <TableHead className="px-6 w-12" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -125,6 +152,18 @@ function RouteComponent() {
                   </TableCell>
                   <TableCell className="px-6 text-zinc-500">
                     {new Date(report.updated_at)?.toLocaleDateString()}
+                  </TableCell>
+                  <TableCell className="px-6">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-50"
+                      disabled={deletingId === report.id}
+                      onClick={(e) => handleDelete(e, report.id, report.name)}
+                      title="Delete report"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}

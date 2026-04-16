@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import { ReportGrid } from "@/components/reports/report-grid";
@@ -12,12 +12,21 @@ import { superAdminMiddleware } from "@/middleware/auth";
 import { isUserSuperAdmin } from "@/lib/auth/request";
 import { NewReportComponentDialog } from "@/components/reports/new-report-component-dialog";
 import type { report as ReportType } from "@/lib/ai-service/report.gen";
+import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 const getReport = createServerFn({ method: "GET" })
   .inputValidator((data: { id: string }) => data)
   .middleware([superAdminMiddleware])
   .handler(async ({ data }) => {
     return await Report.API.getById(data.id);
+  });
+
+const deleteReport = createServerFn({ method: "POST" })
+  .inputValidator((data: { id: string }) => data)
+  .middleware([superAdminMiddleware])
+  .handler(async ({ data }) => {
+    await Report.API.softDelete(data.id);
   });
 
 export const Route = createFileRoute("/app/reports/$id/")({
@@ -47,8 +56,24 @@ function RouteComponent() {
     data: loaderData,
     isSuperAdmin,
   } = Route.useLoaderData();
+  const navigate = useNavigate();
   const [report, setReport] = useState<ReportType | null>(loaderReport);
   const [data, setData] = useState<ComponentData[]>(loaderData);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    if (!report) return;
+    if (!window.confirm(`Delete report "${report.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await deleteReport({ data: { id: report.id } });
+      toast.success("Report deleted");
+      navigate({ to: "/app/reports" });
+    } catch {
+      toast.error("Failed to delete report");
+      setDeleting(false);
+    }
+  };
 
   if (!report) {
     return (
@@ -70,6 +95,16 @@ function RouteComponent() {
           <Link to="/app/reports/$id/edit" params={{ id }}>
             <Button variant="outline">Edit</Button>
           </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-red-500 hover:text-red-600 hover:bg-red-50"
+            disabled={deleting}
+            onClick={handleDelete}
+            title="Delete report"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
           {/*<NewReportComponentDialog
             reportId={report.id}
             existingComponents={report.components}
